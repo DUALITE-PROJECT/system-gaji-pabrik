@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Search, Download, Filter, Loader2, 
-  RefreshCw, ArrowRight, CheckCircle2, Users,
+  RefreshCw, Calculator, ArrowRight, CheckCircle2, Users,
   Wallet, CalendarCheck, Coins, AlertCircle, AlertTriangle, Layers, Database, Copy, X
 } from 'lucide-react';
 import { supabase, isSupabaseConfigured } from '../../../lib/supabase';
@@ -65,40 +65,71 @@ export const GarutInputReport: React.FC<GarutInputReportProps> = ({
     const fetchOptions = async () => {
       if (!isSupabaseConfigured()) return;
       
-      // 1. Ambil Bulan dari Master Karyawan (Agar bisa pilih bulan baru)
+      // 1. Ambil Bulan dari Master Karyawan
       const { data: empData } = await supabase
         .from('data_karyawan_pabrik_garut')
         .select('bulan'); 
 
-      // 2. Ambil Perusahaan & Divisi dari Laporan (Agar sesuai data yang tampil)
-      // UPDATED: Sumber dari total_gaji_pabrik_garut
+      // 2. Ambil Data dari Laporan (Total Gaji) - Termasuk Bulan
       const { data: reportData } = await supabase
         .from('total_gaji_pabrik_garut')
-        .select('perusahaan, divisi, bagian');
+        .select('bulan, perusahaan, divisi, bagian');
 
+      // Gabungkan bulan dari kedua sumber
+      const allMonths = new Set<string>();
+      
       if (empData) {
-        const months = [...new Set(empData.map(d => d.bulan).filter(Boolean))].sort();
-        setOptMonths(months);
-
-        if (months.length > 0 && !filterMonth) {
-          const currentMonthName = new Date().toLocaleString('id-ID', { month: 'long', year: 'numeric' });
-          const match = months.find(m => m.toLowerCase() === currentMonthName.toLowerCase());
-          setFilterMonth(match || months[0]);
-        }
+        empData.forEach(d => {
+            if (d.bulan) allMonths.add(d.bulan);
+        });
       }
 
+      if (reportData) {
+        reportData.forEach(d => {
+            if (d.bulan) allMonths.add(d.bulan);
+        });
+      }
+
+      // Sort Bulan Secara Kronologis (Bukan Alfabet)
+      const monthMap: Record<string, number> = {
+        'januari': 1, 'februari': 2, 'maret': 3, 'april': 4, 'mei': 5, 'juni': 6,
+        'juli': 7, 'agustus': 8, 'september': 9, 'oktober': 10, 'november': 11, 'desember': 12
+      };
+
+      const sortedMonths = Array.from(allMonths).sort((a, b) => {
+          const partsA = a.split(' ');
+          const partsB = b.split(' ');
+          const monthA = partsA[0]?.toLowerCase();
+          const monthB = partsB[0]?.toLowerCase();
+          const yearA = parseInt(partsA[1]) || 0;
+          const yearB = parseInt(partsB[1]) || 0;
+
+          if (yearA !== yearB) return yearB - yearA; // Descending Year
+          return (monthMap[monthB] || 0) - (monthMap[monthA] || 0); // Descending Month
+      });
+
+      setOptMonths(sortedMonths);
+
+      // Auto select latest month if not set
+      if (sortedMonths.length > 0 && !filterMonth) {
+        // Coba cari bulan saat ini dulu
+        const currentMonthName = new Date().toLocaleString('id-ID', { month: 'long', year: 'numeric' });
+        const match = sortedMonths.find(m => m.toLowerCase() === currentMonthName.toLowerCase());
+        setFilterMonth(match || sortedMonths[0]);
+      }
+
+      // Process Companies, Divisions, Bagians from Report Data
       if (reportData) {
          const divisions = [...new Set(reportData.map(d => d.divisi).filter(Boolean))].sort();
          const bagians = [...new Set(reportData.map(d => d.bagian).filter(Boolean))].sort();
          
-         // FIX: Filter perusahaan untuk membuang data kotor (misal "1 PERUSAHAAN")
-         // Hanya ambil yang tidak diawali angka
+         // Filter perusahaan untuk membuang data kotor
          let companies = [...new Set(
              reportData.map(d => d.perusahaan)
              .filter(p => p && p.trim() !== '' && isNaN(parseInt(p.trim()[0]))) 
          )].sort();
          
-         // Fallback: Jika kosong (belum ada laporan), ambil dari master tapi filter ketat (hanya Adnan/Hanan)
+         // Fallback: Jika kosong, ambil dari master
          if (companies.length === 0) {
              const { data: masterCompanies } = await supabase
                 .from('data_karyawan_pabrik_garut')
@@ -459,7 +490,7 @@ export const GarutInputReport: React.FC<GarutInputReportProps> = ({
                               <td className="px-2 py-2 border-r border-blue-50 text-center font-bold bg-blue-50/20">{item.set_h}</td>
                               <td className="px-2 py-2 border-r border-blue-50 text-center bg-blue-50/20 text-gray-500">{item.lp}</td>
                               <td className="px-2 py-2 border-r border-blue-50 text-center bg-blue-50/20 text-gray-500">{item.tm}</td>
-                              <td className="px-3 py-2 border-r border-yellow-50 text-center font-bold bg-yellow-50/20">{item.lembur}</td>
+                              <td className="px-3 py-2 text-center border-r border-yellow-50 font-medium bg-yellow-50/20">{item.lembur}</td>
                               <td className="px-3 py-2 border-r border-purple-50 text-center font-medium bg-purple-50/20">
                                   <span className={`${
                                       item.keluar_masuk?.toUpperCase().includes('KELUAR') ? 'text-red-600' : 

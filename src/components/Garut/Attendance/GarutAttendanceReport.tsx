@@ -62,38 +62,69 @@ export const GarutAttendanceReport: React.FC<GarutAttendanceReportProps> = ({
     const fetchOptions = async () => {
       if (!isSupabaseConfigured()) return;
       
-      // 1. Ambil Bulan dari Master Karyawan (Agar bisa pilih bulan baru)
+      // 1. Ambil Bulan dari Master Karyawan
       const { data: empData } = await supabase
         .from('data_karyawan_pabrik_garut')
         .select('bulan'); 
 
-      // 2. Ambil Perusahaan & Divisi dari Laporan (Agar sesuai data yang tampil)
+      // 2. Ambil Data dari Laporan (Bulan, Perusahaan, Divisi)
+      // FIX: Ambil bulan juga dari laporan agar jika master belum ada, bulan tetap muncul
       const { data: reportData } = await supabase
         .from('laporan_bulanan_pabrik_garut')
-        .select('perusahaan, divisi');
+        .select('bulan, perusahaan, divisi');
+
+      // Gabungkan bulan dari kedua sumber
+      const allMonths = new Set<string>();
 
       if (empData) {
-        const months = [...new Set(empData.map(d => d.bulan).filter(Boolean))].sort();
-        setOptMonths(months);
+        empData.forEach(d => {
+            if (d.bulan) allMonths.add(d.bulan);
+        });
+      }
 
-        if (months.length > 0 && !filterMonth) {
-          const currentMonthName = new Date().toLocaleString('id-ID', { month: 'long', year: 'numeric' });
-          const match = months.find(m => m.toLowerCase() === currentMonthName.toLowerCase());
-          setFilterMonth(match || months[0]);
-        }
+      if (reportData) {
+         reportData.forEach(d => {
+             if (d.bulan) allMonths.add(d.bulan);
+         });
+      }
+
+      // Sort Bulan Secara Kronologis
+      const monthMap: Record<string, number> = {
+        'januari': 1, 'februari': 2, 'maret': 3, 'april': 4, 'mei': 5, 'juni': 6,
+        'juli': 7, 'agustus': 8, 'september': 9, 'oktober': 10, 'november': 11, 'desember': 12
+      };
+
+      const sortedMonths = Array.from(allMonths).sort((a, b) => {
+          const partsA = a.split(' ');
+          const partsB = b.split(' ');
+          const monthA = partsA[0]?.toLowerCase();
+          const monthB = partsB[0]?.toLowerCase();
+          const yearA = parseInt(partsA[1]) || 0;
+          const yearB = parseInt(partsB[1]) || 0;
+
+          if (yearA !== yearB) return yearB - yearA; // Descending Year
+          return (monthMap[monthB] || 0) - (monthMap[monthA] || 0); // Descending Month
+      });
+
+      setOptMonths(sortedMonths);
+
+      // Auto select latest month if not set
+      if (sortedMonths.length > 0 && !filterMonth) {
+        const currentMonthName = new Date().toLocaleString('id-ID', { month: 'long', year: 'numeric' });
+        const match = sortedMonths.find(m => m.toLowerCase() === currentMonthName.toLowerCase());
+        setFilterMonth(match || sortedMonths[0]);
       }
 
       if (reportData) {
          const divisions = [...new Set(reportData.map(d => d.divisi).filter(Boolean))].sort();
          
          // FIX: Filter perusahaan untuk membuang data kotor (misal "1 PERUSAHAAN")
-         // Hanya ambil yang tidak diawali angka
          let companies = [...new Set(
              reportData.map(d => d.perusahaan)
              .filter(p => p && p.trim() !== '' && isNaN(parseInt(p.trim()[0]))) 
          )].sort();
          
-         // Fallback: Jika kosong (belum ada laporan), ambil dari master tapi filter ketat (hanya Adnan/Hanan)
+         // Fallback: Jika kosong (belum ada laporan), ambil dari master tapi filter ketat
          if (companies.length === 0) {
              const { data: masterCompanies } = await supabase
                 .from('data_karyawan_pabrik_garut')
@@ -162,11 +193,6 @@ export const GarutAttendanceReport: React.FC<GarutAttendanceReportProps> = ({
     setIsRecalculating(true);
     setRecalcProgress('Proses Hitung...');
     
-    console.group(">>> DEBUG: HITUNG ULANG LAPORAN BULANAN");
-    console.log("1. Action Triggered: User clicked 'Hitung Ulang'");
-    console.log("2. Target Function: 'generate_laporan_bulanan_proporsional'");
-    console.log("3. Payload:", { p_bulan: filterMonth });
-
     try {
         if (!isSupabaseConfigured()) throw new Error("Supabase belum dikonfigurasi.");
 
@@ -174,7 +200,6 @@ export const GarutAttendanceReport: React.FC<GarutAttendanceReportProps> = ({
         try {
             const { data: sessionData } = await supabase.auth.getSession();
             if (!sessionData?.session) {
-                console.warn("Session not found, attempting refresh...");
                 await supabase.auth.refreshSession();
             }
         } catch (e) {
@@ -185,17 +210,11 @@ export const GarutAttendanceReport: React.FC<GarutAttendanceReportProps> = ({
         const { data: msg, error: err } = await supabase.rpc('generate_laporan_bulanan_proporsional', { p_bulan: filterMonth });
         
         if (err) {
-            console.error("RPC Error:", err);
-            
-            // Tangkap error permission denied (42501)
             if (err.code === '42501') {
-               throw new Error("Izin Ditolak (42501): Database menolak akses publik/anonim. Harap jalankan: GRANT EXECUTE ON FUNCTION public.generate_laporan_bulanan_proporsional TO anon;");
+               throw new Error("Izin Ditolak (42501): Database menolak akses. Harap hubungi admin.");
             }
             throw err;
         }
-
-        console.log(">>> RPC CALL SUCCESS:", msg);
-        console.groupEnd();
 
         setSuccessModal({ 
             isOpen: true, 
@@ -205,10 +224,6 @@ export const GarutAttendanceReport: React.FC<GarutAttendanceReportProps> = ({
         
         fetchData();
     } catch (error: any) {
-        if (!error.message.includes('42501')) {
-            console.error(">>> DEBUG: ERROR", error);
-        }
-        console.groupEnd();
         setErrorModal({ isOpen: true, title: 'Gagal Proses', message: error.message });
     } finally {
         setIsRecalculating(false);
@@ -513,7 +528,7 @@ export const GarutAttendanceReport: React.FC<GarutAttendanceReportProps> = ({
                           <td className="px-2 py-2 border-r border-blue-50 text-center font-bold bg-blue-50/20">{item.set_h}</td>
                           <td className="px-2 py-2 border-r border-blue-50 text-center bg-blue-50/20 text-gray-500">{item.lp}</td>
                           <td className="px-2 py-2 border-r border-blue-50 text-center bg-blue-50/20 text-gray-500">{item.tm}</td>
-                          <td className="px-3 py-2 border-r border-yellow-50 text-center font-bold bg-yellow-50/20">{item.lembur}</td>
+                          <td className="px-3 py-2 text-center border-r border-yellow-50 font-medium bg-yellow-50/20">{item.lembur}</td>
                           <td className="px-3 py-2 border-r border-purple-50 text-center font-medium bg-purple-50/20">
                               <span className={`${
                                   item.keluar_masuk?.toUpperCase().includes('KELUAR') ? 'text-red-600' : 
