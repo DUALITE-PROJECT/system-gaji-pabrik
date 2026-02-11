@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { 
   ChevronLeft, ChevronRight, Printer, Search, Loader2, 
   FileText, Filter, Download, Building2, X, Layers,
-  Banknote, AlertCircle, CheckCircle2, Square, CheckSquare, ChevronDown
+  Banknote, AlertCircle, ChevronDown, CheckCircle2, Square, CheckSquare
 } from 'lucide-react';
 import { supabase, isSupabaseConfigured } from '../../../lib/supabase';
 import { MoneyRequirementsModal } from './MoneyRequirementsModal';
@@ -64,6 +64,7 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
   // Tables
   const reportTable = isGarut ? 'laporan_bulanan_pabrik_garut' : 'laporan_bulanan_pabrik';
   const boronganTable = isGarut ? 'data_gaji_borongan_pabrik_garut' : 'gaji_borongan';
+  const presensiTable = isGarut ? 'presensi_harian_pabrik_garut' : 'presensi_harian_pabrik';
   const employeeTable = isGarut ? 'data_karyawan_pabrik_garut' : 'karyawan_pabrik';
 
   // --- CLICK OUTSIDE HANDLER ---
@@ -257,53 +258,94 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
     fetchMaster();
   }, []);
 
-  // --- 3. FETCH SLIP LIST (NAVIGATION) ---
+  // --- NEW: FETCH GLOBAL MASTER SEQUENCE (MATCHING SIGNATURE LIST) ---
   useEffect(() => {
-    const fetchNavigationList = async () => {
+    const fetchGlobalSequence = async () => {
+        if (!selectedMonth || !isSupabaseConfigured()) return;
+        
+        try {
+            const uniqueCodes = new Set<string>();
+
+            // 1. Report Table
+            const { data: reportCodes } = await supabase
+                .from(reportTable)
+                .select('kode')
+                .eq('bulan', selectedMonth);
+            reportCodes?.forEach(c => uniqueCodes.add(c.kode));
+
+            // 2. Borongan Table (Only if Garut)
+            if (isGarut) {
+                const { data: boronganCodes } = await supabase
+                    .from(boronganTable)
+                    .select('kode')
+                    .eq('bulan', selectedMonth);
+                boronganCodes?.forEach(c => uniqueCodes.add(c.kode));
+            }
+
+            // 3. Employee Master (Fallback)
+            const { data: empCodes } = await supabase
+                .from(employeeTable)
+                .select('kode')
+                .eq('bulan', selectedMonth);
+            empCodes?.forEach(c => uniqueCodes.add(c.kode));
+
+            // Sort alphabetically to match Signature List logic
+            const sorted = Array.from(uniqueCodes).sort();
+            setMasterSequence(sorted);
+
+        } catch (err) {
+            console.error("Error fetching global sequence:", err);
+        }
+    };
+
+    fetchGlobalSequence();
+  }, [selectedMonth, isGarut, reportTable, boronganTable, employeeTable]);
+
+  // --- 3. FETCH EMPLOYEE LIST (NAVIGATION) ---
+  useEffect(() => {
+    const fetchEmployees = async () => {
       if (!selectedMonth || !isSupabaseConfigured()) return;
       setIsLoading(true);
 
       try {
-        // A. Fetch Regular Slips (From Report)
-        let queryReport = supabase
+        // Fetch Regular Employees
+        let query = supabase
           .from(reportTable)
-          .select('id, kode, nama, periode')
+          .select('kode, nama, periode')
           .eq('bulan', selectedMonth);
 
-        // Filter Perusahaan Regular
         if (selectedCompany !== 'Semua Perusahaan') {
-             // Jika pilih Borongan, Regular kosong (kecuali ada data perusahaan='Borongan' di tabel laporan)
              if (selectedCompany === 'Borongan') {
-                 queryReport = queryReport.eq('perusahaan', '###NO_MATCH###'); 
+                 query = query.eq('perusahaan', '###NO_MATCH###'); 
              } else {
-                 queryReport = queryReport.eq('perusahaan', selectedCompany);
+                 query = query.eq('perusahaan', selectedCompany);
              }
         }
         
         // Multi-select Division Filter
         if (!selectedDivisions.includes('Semua Divisi')) {
-            queryReport = queryReport.in('divisi', selectedDivisions);
+            query = query.in('divisi', selectedDivisions);
         }
         
         if (selectedPeriod !== 'Semua Periode') {
-            queryReport = queryReport.eq('periode', selectedPeriod);
+            query = query.eq('periode', selectedPeriod);
         }
         
         if (searchTerm) {
-            queryReport = queryReport.or(`nama.ilike.%${searchTerm}%,kode.ilike.%${searchTerm}%`);
+            query = query.or(`nama.ilike.%${searchTerm}%,kode.ilike.%${searchTerm}%`);
         }
 
-        const { data: regularData } = await queryReport;
+        const { data: regularData } = await query;
         
         const regularItems: SlipNavigationItem[] = (regularData || []).map((d: any) => ({
             type: 'regular',
-            id: d.id,
+            id: d.id, // Note: id is not selected in query above, might need fixing if used
             kode: d.kode,
             nama: d.nama,
             periode: d.periode
         }));
 
-        // B. Fetch Borongan Slips (BATCH FETCHING)
+        // Fetch Borongan Employees if applicable
         let boronganItems: SlipNavigationItem[] = [];
         const showBorongan = (selectedCompany === 'Semua Perusahaan' || selectedCompany.toUpperCase().includes('BORONGAN')) && selectedDivisions.includes('Semua Divisi');
 
@@ -314,7 +356,7 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
                  searchTerm: searchTerm
              });
              
-             // Dedup Borongan Data (Group by Kode + Periode)
+             // Dedup Borongan Data
              const uniqueSet = new Set<string>();
              if (bData) {
                  bData.forEach((d: any) => {
@@ -323,7 +365,7 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
                          uniqueSet.add(key);
                          boronganItems.push({
                              type: 'borongan',
-                             id: key, // Composite ID
+                             id: key, 
                              kode: d.kode,
                              nama: d.nama,
                              periode: d.periode
@@ -333,17 +375,12 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
              }
         }
 
-        // Combine and Sort
+        // Combine and Sort for Navigation
         const combined = [...regularItems, ...boronganItems].sort((a, b) => {
-            // Sort by Name, then Period
             const nameCompare = a.nama.localeCompare(b.nama);
             if (nameCompare !== 0) return nameCompare;
             return a.periode.localeCompare(b.periode);
         });
-
-        // Set Master Sequence for numbering (Unique Codes only)
-        const uniqueCodes = new Set(combined.map(i => i.kode));
-        setMasterSequence(Array.from(uniqueCodes).sort());
 
         setSlipNavigation(combined);
         setCurrentIndex(0);
@@ -356,7 +393,7 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
     };
 
     const delayDebounceFn = setTimeout(() => {
-      fetchNavigationList();
+      fetchEmployees();
     }, 500);
 
     return () => clearTimeout(delayDebounceFn);
@@ -376,27 +413,32 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
 
       try {
         if (currentItem.type === 'regular') {
-            // Fetch Regular Slip by ID
-            const { data: regularData } = await supabase
+            // Fetch Regular Slip by Kode & Periode (since ID wasn't fetched in nav list)
+            // Or fetch by ID if we add ID to nav list query
+            let query = supabase
                 .from(reportTable)
                 .select('*')
-                .eq('id', currentItem.id)
-                .single();
+                .eq('bulan', selectedMonth)
+                .eq('kode', currentItem.kode)
+                .eq('periode', currentItem.periode);
+
+            // Add company/division filters to be safe if duplicates exist across PTs (unlikely for same code)
+            if (selectedCompany !== 'Semua Perusahaan' && selectedCompany !== 'Borongan') {
+                query = query.eq('perusahaan', selectedCompany);
+            }
+
+            const { data: regularData } = await query.maybeSingle();
             
             setCurrentSlip(regularData);
             setBoronganData([]);
         } else {
-            // Fetch Borongan Slip (Aggregate daily records for this period)
-            // currentItem.id is "KODE|PERIODE"
-            const [kode, periode] = currentItem.id.split('|');
-            
-            // Fetch ALL daily records for this specific person & period
+            // Fetch Borongan Slip
             const { data: bData } = await supabase
                 .from(boronganTable)
                 .select('*')
                 .eq('bulan', selectedMonth)
-                .eq('kode', kode)
-                .eq('periode', periode);
+                .eq('kode', currentItem.kode)
+                .eq('periode', currentItem.periode);
             
             if (bData && bData.length > 0) {
                 setBoronganData(aggregateBoronganData(bData));
