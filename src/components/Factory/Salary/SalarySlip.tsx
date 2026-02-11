@@ -679,8 +679,11 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
     const seqNum = getSequenceNumber(data.kode);
     const isPeriode1 = (data.periode || '').toString().toLowerCase().includes('periode 1');
     
+    // Determine Grade based on Period
+    const displayGrade = isPeriode1 ? data.grade_p1 : data.grade_p2;
+
     const master = masterSalaries.find(m => 
-        (m.grade || '').trim().toUpperCase() === (data.grade || '').trim().toUpperCase() &&
+        (m.grade || '').trim().toUpperCase() === (displayGrade || data.grade || '').trim().toUpperCase() &&
         (data.bulan || '').toLowerCase().includes((m.bulan || '').toLowerCase())
     );
     const tarifHarian = master?.gaji_harian || 0;
@@ -719,7 +722,7 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
           <div className="flex justify-between"><span className="text-gray-600">Nama:</span><span className="font-bold">{data.nama}</span></div>
           <div className="flex justify-between"><span className="text-gray-600">Divisi:</span><span>{data.divisi}</span></div>
           <div className="flex justify-between"><span className="text-gray-600">Kode:</span><span className="font-mono">{data.kode}</span></div>
-          <div className="flex justify-between"><span className="text-gray-600">Grade:</span><span>{data.grade}</span></div>
+          <div className="flex justify-between"><span className="text-gray-600">Grade:</span><span>{displayGrade || data.grade || '-'}</span></div>
         </div>
 
         {/* Attendance Grid */}
@@ -862,7 +865,7 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
                 </div>
             </div>
             <div>
-                <h3 className="font-bold border-b border-gray-300 pb-0.5 text-[8px] uppercase text-gray-500 mb-1">TUNJANGAN & POTONGAN</h3>
+                <h3 className="font-bold border-b border-gray-300 pb-0.5 text-[8px] uppercase text-gray-500 mb-1">TUNJANGAN</h3>
                 <div className="mb-1">
                     <div className="flex justify-between font-bold"><span>Bonus</span><span>{bonusText}</span></div>
                 </div>
