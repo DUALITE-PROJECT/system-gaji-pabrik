@@ -28,14 +28,9 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
   
   // Filter State
   const [selectedMonth, setSelectedMonth] = useState('');
-  const [selectedPeriod, setSelectedPeriod] = useState('Semua Periode'); 
+  const [selectedPeriod, setSelectedPeriod] = useState('Semua Periode'); // Added missing state
   const [selectedCompany, setSelectedCompany] = useState('Semua Perusahaan');
-  
-  // Multi-select Division State
-  const [selectedDivisions, setSelectedDivisions] = useState<string[]>(['Semua Divisi']);
-  const [isDivDropdownOpen, setIsDivDropdownOpen] = useState(false);
-  const divDropdownRef = useRef<HTMLDivElement>(null);
-
+  const [selectedDivision, setSelectedDivision] = useState('Semua Divisi');
   const [searchTerm, setSearchTerm] = useState('');
   
   const [uniqueMonths, setUniqueMonths] = useState<string[]>([]);
@@ -43,7 +38,7 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
   const [uniqueDivisions, setUniqueDivisions] = useState<string[]>([]);
   
   // Navigation State
-  const [slipNavigation, setSlipNavigation] = useState<SlipNavigationItem[]>([]);
+  const [employeeCodes, setEmployeeCodes] = useState<string[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
 
   // Data State
@@ -66,17 +61,6 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
   const boronganTable = isGarut ? 'data_gaji_borongan_pabrik_garut' : 'gaji_borongan';
   const presensiTable = isGarut ? 'presensi_harian_pabrik_garut' : 'presensi_harian_pabrik';
   const employeeTable = isGarut ? 'data_karyawan_pabrik_garut' : 'karyawan_pabrik';
-
-  // --- CLICK OUTSIDE HANDLER ---
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (divDropdownRef.current && !divDropdownRef.current.contains(event.target as Node)) {
-        setIsDivDropdownOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
 
   // --- HELPER: COMPANY NAME MAPPING ---
   const getDisplayCompanyName = (name: string) => {
@@ -224,6 +208,21 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
         });
       }
 
+      // 4. Fetch from Presensi Table (NEW: To ensure months with only attendance show up)
+      const { data: presensiData } = await supabase
+        .from(presensiTable)
+        .select('bulan');
+
+      if (presensiData) {
+        presensiData.forEach(d => {
+            if (d.bulan) allMonths.add(d.bulan);
+        });
+      }
+
+      // NEW: Always add current month as fallback
+      const currentMonthName = new Date().toLocaleString('id-ID', { month: 'long', year: 'numeric' });
+      allMonths.add(currentMonthName);
+
       // Process Months
       const months = Array.from(allMonths).filter(Boolean);
       const parseMonth = (str: string) => {
@@ -247,7 +246,7 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
       setUniqueDivisions(Array.from(allDivisions).sort());
     };
     fetchFilters();
-  }, [isGarut, reportTable, boronganTable, employeeTable]);
+  }, [isGarut, reportTable, boronganTable, employeeTable, presensiTable]);
 
   // --- 2. FETCH MASTER GAJI ---
   useEffect(() => {
@@ -311,25 +310,13 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
         // Fetch Regular Employees
         let query = supabase
           .from(reportTable)
-          .select('kode, nama, periode')
+          .select('kode')
           .eq('bulan', selectedMonth);
 
-        if (selectedCompany !== 'Semua Perusahaan') {
-             if (selectedCompany === 'Borongan') {
-                 query = query.eq('perusahaan', '###NO_MATCH###'); 
-             } else {
-                 query = query.eq('perusahaan', selectedCompany);
-             }
-        }
-        
-        // Multi-select Division Filter
-        if (!selectedDivisions.includes('Semua Divisi')) {
-            query = query.in('divisi', selectedDivisions);
-        }
-        
-        if (selectedPeriod !== 'Semua Periode') {
-            query = query.eq('periode', selectedPeriod);
-        }
+        if (selectedCompany !== 'Semua Perusahaan') query = query.eq('perusahaan', selectedCompany);
+        if (selectedDivision !== 'Semua Divisi') query = query.eq('divisi', selectedDivision);
+        // Note: Period filter is not applied here as Staff typically doesn't have period column in report table, 
+        // but we keep the state for UI consistency if needed later.
         
         if (searchTerm) {
             query = query.or(`nama.ilike.%${searchTerm}%,kode.ilike.%${searchTerm}%`);
@@ -337,108 +324,77 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
 
         const { data: regularData } = await query;
         
-        const regularItems: SlipNavigationItem[] = (regularData || []).map((d: any) => ({
-            type: 'regular',
-            id: d.id, // Note: id is not selected in query above, might need fixing if used
-            kode: d.kode,
-            nama: d.nama,
-            periode: d.periode
-        }));
-
         // Fetch Borongan Employees if applicable
-        let boronganItems: SlipNavigationItem[] = [];
-        const showBorongan = (selectedCompany === 'Semua Perusahaan' || selectedCompany.toUpperCase().includes('BORONGAN')) && selectedDivisions.includes('Semua Divisi');
-
-        if (isGarut && showBorongan) {
-             const bData = await fetchAllBoronganData('kode, nama, periode', {
-                 month: selectedMonth,
-                 period: selectedPeriod,
-                 searchTerm: searchTerm
-             });
+        let boronganCodes: string[] = [];
+        if (isGarut && (selectedCompany === 'Semua Perusahaan' || selectedCompany.toUpperCase().includes('BORONGAN'))) {
+             let qBorongan = supabase
+                .from(boronganTable)
+                .select('kode')
+                .eq('bulan', selectedMonth);
              
-             // Dedup Borongan Data
-             const uniqueSet = new Set<string>();
-             if (bData) {
-                 bData.forEach((d: any) => {
-                     const key = `${d.kode}|${d.periode}`;
-                     if (!uniqueSet.has(key)) {
-                         uniqueSet.add(key);
-                         boronganItems.push({
-                             type: 'borongan',
-                             id: key, 
-                             kode: d.kode,
-                             nama: d.nama,
-                             periode: d.periode
-                         });
-                     }
-                 });
+             if (searchTerm) {
+                 qBorongan = qBorongan.or(`nama.ilike.%${searchTerm}%,kode.ilike.%${searchTerm}%`);
              }
+             
+             const { data: bData } = await qBorongan;
+             if (bData) boronganCodes = bData.map(d => d.kode);
         }
 
-        // Combine and Sort for Navigation
-        const combined = [...regularItems, ...boronganItems].sort((a, b) => {
-            const nameCompare = a.nama.localeCompare(b.nama);
-            if (nameCompare !== 0) return nameCompare;
-            return a.periode.localeCompare(b.periode);
-        });
-
-        setSlipNavigation(combined);
+        const allCodes = new Set([
+            ...(regularData?.map(d => d.kode) || []),
+            ...boronganCodes
+        ]);
+        
+        const sortedCodes = Array.from(allCodes).sort();
+        setEmployeeCodes(sortedCodes);
+        setMasterSequence(sortedCodes);
         setCurrentIndex(0);
         
       } catch (error) {
-        console.error("Error fetching slip list:", error);
+        console.error("Error fetching staff list:", error);
       } finally {
         setIsLoading(false);
       }
     };
 
-    const delayDebounceFn = setTimeout(() => {
-      fetchEmployees();
-    }, 500);
-
-    return () => clearTimeout(delayDebounceFn);
-  }, [selectedMonth, selectedCompany, selectedDivisions, selectedPeriod, searchTerm, isGarut, reportTable, boronganTable]);
+    fetchEmployees();
+  }, [selectedMonth, selectedCompany, selectedDivision, searchTerm, isGarut, reportTable, boronganTable]);
 
   // --- 4. FETCH CURRENT SLIP DETAIL ---
   useEffect(() => {
     const fetchSlip = async () => {
-      if (slipNavigation.length === 0 || !selectedMonth) {
+      if (employeeCodes.length === 0 || !selectedMonth) {
         setCurrentSlip(null);
         setBoronganData([]);
         return;
       }
 
       setIsLoadingData(true);
-      const currentItem = slipNavigation[currentIndex];
+      const currentKode = employeeCodes[currentIndex];
 
       try {
-        if (currentItem.type === 'regular') {
-            // Fetch Regular Slip by Kode & Periode (since ID wasn't fetched in nav list)
-            // Or fetch by ID if we add ID to nav list query
-            let query = supabase
-                .from(reportTable)
-                .select('*')
-                .eq('bulan', selectedMonth)
-                .eq('kode', currentItem.kode)
-                .eq('periode', currentItem.periode);
+        // Try Fetch Regular Slip
+        let query = supabase
+          .from(reportTable)
+          .select('*')
+          .eq('bulan', selectedMonth)
+          .eq('kode', currentKode);
 
-            // Add company/division filters to be safe if duplicates exist across PTs (unlikely for same code)
-            if (selectedCompany !== 'Semua Perusahaan' && selectedCompany !== 'Borongan') {
-                query = query.eq('perusahaan', selectedCompany);
-            }
+        if (selectedCompany !== 'Semua Perusahaan') query = query.eq('perusahaan', selectedCompany);
+        if (selectedDivision !== 'Semua Divisi') query = query.eq('divisi', selectedDivision);
 
-            const { data: regularData } = await query.maybeSingle();
-            
+        const { data: regularData } = await query.maybeSingle();
+
+        if (regularData) {
             setCurrentSlip(regularData);
             setBoronganData([]);
         } else {
-            // Fetch Borongan Slip
+            // Try Fetch Borongan Slip
             const { data: bData } = await supabase
                 .from(boronganTable)
                 .select('*')
                 .eq('bulan', selectedMonth)
-                .eq('kode', currentItem.kode)
-                .eq('periode', currentItem.periode);
+                .eq('kode', currentKode);
             
             if (bData && bData.length > 0) {
                 setBoronganData(aggregateBoronganData(bData));
@@ -448,6 +404,7 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
                 setBoronganData([]);
             }
         }
+
       } catch (error) {
         console.error("Error fetching slip:", error);
         setCurrentSlip(null);
@@ -457,42 +414,13 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
     };
 
     fetchSlip();
-  }, [currentIndex, slipNavigation, selectedMonth]);
+  }, [currentIndex, employeeCodes, selectedMonth, selectedCompany, selectedDivision]);
 
   // --- HANDLERS ---
-  const handlePrev = () => setCurrentIndex(prev => (prev > 0 ? prev - 1 : slipNavigation.length - 1));
-  const handleNext = () => setCurrentIndex(prev => (prev < slipNavigation.length - 1 ? prev + 1 : 0));
+  const handlePrev = () => setCurrentIndex(prev => (prev > 0 ? prev - 1 : employeeCodes.length - 1));
+  const handleNext = () => setCurrentIndex(prev => (prev < employeeCodes.length - 1 ? prev + 1 : 0));
+  
   const handleSearch = (e: React.ChangeEvent<HTMLInputElement>) => setSearchTerm(e.target.value);
-
-  // --- MULTI-SELECT HANDLER ---
-  const handleDivisionToggle = (div: string, e: React.MouseEvent) => {
-    e.stopPropagation(); 
-    e.preventDefault();
-
-    setSelectedDivisions(prev => {
-      if (div === 'Semua Divisi') {
-        return ['Semua Divisi'];
-      }
-      
-      let newSelection = [...prev];
-      
-      if (newSelection.includes('Semua Divisi')) {
-        newSelection = [];
-      }
-
-      if (newSelection.includes(div)) {
-        newSelection = newSelection.filter(d => d !== div);
-      } else {
-        newSelection.push(div);
-      }
-
-      if (newSelection.length === 0) {
-        return ['Semua Divisi'];
-      }
-      
-      return newSelection;
-    });
-  };
 
   const formatRupiah = (value: number) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(value);
 
@@ -521,20 +449,8 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
           .select('*')
           .eq('bulan', selectedMonth);
 
-        if (selectedCompany !== 'Semua Perusahaan') {
-             if (selectedCompany === 'Borongan') {
-                 query = query.eq('perusahaan', '###NO_MATCH###');
-             } else {
-                 query = query.eq('perusahaan', selectedCompany);
-             }
-        }
-        
-        // Multi-select Division Filter
-        if (!selectedDivisions.includes('Semua Divisi')) {
-            query = query.in('divisi', selectedDivisions);
-        }
-
-        if (selectedPeriod !== 'Semua Periode') query = query.eq('periode', selectedPeriod);
+        if (selectedCompany !== 'Semua Perusahaan') query = query.eq('perusahaan', selectedCompany);
+        if (selectedDivision !== 'Semua Divisi') query = query.eq('divisi', selectedDivision);
         
         if (searchTerm) {
             query = query.or(`nama.ilike.%${searchTerm}%,kode.ilike.%${searchTerm}%`);
@@ -542,28 +458,28 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
 
         const { data: regularData } = await query.order('kode', { ascending: true });
         
-        // Fetch Borongan Slips (BATCHED)
+        // Fetch Borongan Slips
         let boronganRes: any[] = [];
-        const showBorongan = (selectedCompany === 'Semua Perusahaan' || selectedCompany.toUpperCase().includes('BORONGAN')) && selectedDivisions.includes('Semua Divisi');
-
-        if (isGarut && showBorongan) {
-             const bData = await fetchAllBoronganData('*', {
-                 month: selectedMonth,
-                 period: selectedPeriod,
-                 searchTerm: searchTerm
-             });
-             boronganRes = aggregateBoronganData(bData || []);
+        if (isGarut && (selectedCompany === 'Semua Perusahaan' || selectedCompany.toUpperCase().includes('BORONGAN'))) {
+             let qBorongan = supabase
+                .from(boronganTable)
+                .select('*')
+                .eq('bulan', selectedMonth);
+             
+             if (searchTerm) {
+                 qBorongan = qBorongan.or(`nama.ilike.%${searchTerm}%,kode.ilike.%${searchTerm}%`);
+             }
+             
+             const { data: bData } = await qBorongan;
+             if (bData) {
+                 boronganRes = aggregateBoronganData(bData);
+             }
         }
 
         const combinedSlips = [
             ...(regularData || []).map((d: any) => ({ type: 'regular', data: d })),
             ...(boronganRes || []).map((d: any) => ({ type: 'borongan', data: d }))
-        ].sort((a, b) => {
-             // Sort by Name then Period
-             const nameCompare = a.data.nama.localeCompare(b.data.nama);
-             if (nameCompare !== 0) return nameCompare;
-             return (a.data.periode || '').localeCompare(b.data.periode || '');
-        });
+        ].sort((a, b) => a.data.kode.localeCompare(b.data.kode));
 
         if (combinedSlips.length > 0) {
             setBulkSlips(combinedSlips);
@@ -612,31 +528,14 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
           .select('hasil_gaji')
           .eq('bulan', selectedMonth);
 
-        if (selectedCompany !== 'Semua Perusahaan') {
-             if (selectedCompany === 'Borongan') {
-                 query = query.eq('perusahaan', '###NO_MATCH###'); 
-             } else {
-                 query = query.eq('perusahaan', selectedCompany);
-             }
-        }
-        
-        // Multi-select Division Filter
-        if (!selectedDivisions.includes('Semua Divisi')) {
-            query = query.in('divisi', selectedDivisions);
-        }
-        
-        if (selectedPeriod !== 'Semua Periode') {
-            query = query.eq('periode', selectedPeriod);
-        }
+        if (selectedCompany !== 'Semua Perusahaan') query = query.eq('perusahaan', selectedCompany);
+        if (selectedDivision !== 'Semua Divisi') query = query.eq('divisi', selectedDivision);
 
         const { data: regularData } = await query;
         if (regularData) allMoneyData = [...allMoneyData, ...regularData];
 
         // 2. Fetch Borongan Data (BATCHED)
-        const showBorongan = (selectedCompany === 'Semua Perusahaan' || selectedCompany.toUpperCase().includes('BORONGAN')) && selectedDivisions.includes('Semua Divisi');
-
-        if (isGarut && showBorongan) {
-             // FETCH PERIODE COLUMN TO GROUP CORRECTLY
+        if (isGarut && (selectedCompany === 'Semua Perusahaan' || selectedCompany.toUpperCase().includes('BORONGAN'))) {
              const bData = await fetchAllBoronganData('kode, gaji, bonus, kasbon, periode', {
                  month: selectedMonth,
                  period: selectedPeriod,
@@ -687,7 +586,7 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
         (data.bulan || '').toLowerCase().includes((m.bulan || '').toLowerCase())
     );
     const tarifHarian = master?.gaji_harian || 0;
-    const tarifPerJam = master?.gaji_per_jam || 0; 
+    const tarifPerJam = master?.gaji_per_jam || 0; // Added for Set.H calculation display
 
     const containerClass = isBulk 
         ? "slip-page bg-white border-2 border-black p-3 relative flex flex-col box-border" 
@@ -948,44 +847,17 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
               </select>
             </div>
 
-            {/* MULTI-SELECT DIVISION FILTER */}
-            <div className="relative" ref={divDropdownRef}>
-              <button 
-                onClick={() => setIsDivDropdownOpen(!isDivDropdownOpen)}
-                className="pl-9 pr-4 py-2 border border-gray-200 bg-gray-50 rounded-lg text-sm font-medium focus:ring-2 focus:ring-erp-pink outline-none flex items-center justify-between w-48 bg-white"
+            {/* Division Filter */}
+            <div className="relative">
+              <Layers size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"/>
+              <select 
+                value={selectedDivision} 
+                onChange={(e) => setSelectedDivision(e.target.value)} 
+                className="pl-9 pr-4 py-2 border border-gray-200 bg-gray-50 rounded-lg text-sm font-medium focus:ring-2 focus:ring-erp-pink outline-none cursor-pointer"
               >
-                <Layers size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"/>
-                <span className="truncate text-left">
-                  {selectedDivisions.includes('Semua Divisi') ? 'Semua Divisi' : `${selectedDivisions.length} Divisi Terpilih`}
-                </span>
-                <ChevronDown size={14} className="text-gray-400 ml-2"/>
-              </button>
-              
-              {isDivDropdownOpen && (
-                <div 
-                  className="absolute top-full left-0 mt-1 w-64 bg-white border border-gray-200 rounded-lg shadow-xl z-50 max-h-60 overflow-y-auto p-1"
-                  onClick={(e) => e.stopPropagation()} // Prevent click inside from closing
-                >
-                  <div 
-                    className={`px-3 py-2 text-sm cursor-pointer hover:bg-gray-50 rounded flex items-center gap-2 ${selectedDivisions.includes('Semua Divisi') ? 'text-erp-pink font-bold' : 'text-gray-700'}`}
-                    onClick={(e) => handleDivisionToggle('Semua Divisi', e)}
-                  >
-                    {selectedDivisions.includes('Semua Divisi') ? <CheckCircle2 size={16} className="text-erp-pink"/> : <Square size={16} className="text-gray-300"/>}
-                    Semua Divisi
-                  </div>
-                  <div className="border-t border-gray-100 my-1"></div>
-                  {uniqueDivisions.map(div => (
-                    <div 
-                      key={div}
-                      className={`px-3 py-2 text-sm cursor-pointer hover:bg-gray-50 rounded flex items-center gap-2 ${selectedDivisions.includes(div) ? 'text-erp-pink font-bold' : 'text-gray-700'}`}
-                      onClick={(e) => handleDivisionToggle(div, e)}
-                    >
-                      {selectedDivisions.includes(div) ? <CheckSquare size={16} className="text-erp-pink"/> : <Square size={16} className="text-gray-300"/>}
-                      {div}
-                    </div>
-                  ))}
-                </div>
-              )}
+                <option value="Semua Divisi">Semua Divisi</option>
+                {uniqueDivisions.map(d => <option key={d} value={d}>{d}</option>)}
+              </select>
             </div>
 
             {/* Search */}
@@ -1011,14 +883,14 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
             </button>
 
             <div className="flex items-center gap-2 bg-gray-50 p-1 rounded-lg border border-gray-200">
-              <button onClick={handlePrev} className="p-1.5 hover:bg-white rounded-md shadow-sm transition-all" disabled={slipNavigation.length === 0}><ChevronLeft size={18} /></button>
-              <span className="text-xs font-medium px-2 min-w-[100px] text-center">{slipNavigation.length > 0 ? `${currentIndex + 1} / ${slipNavigation.length}` : '0'}</span>
-              <button onClick={handleNext} className="p-1.5 hover:bg-white rounded-md shadow-sm transition-all" disabled={slipNavigation.length === 0}><ChevronRight size={18} /></button>
+              <button onClick={handlePrev} className="p-1.5 hover:bg-white rounded-md shadow-sm transition-all" disabled={employeeCodes.length === 0}><ChevronLeft size={18} /></button>
+              <span className="text-xs font-medium px-2 min-w-[100px] text-center">{employeeCodes.length > 0 ? `${currentIndex + 1} / ${employeeCodes.length}` : '0'}</span>
+              <button onClick={handleNext} className="p-1.5 hover:bg-white rounded-md shadow-sm transition-all" disabled={employeeCodes.length === 0}><ChevronRight size={18} /></button>
             </div>
             
             <button onClick={handleDownloadPDF} className="bg-blue-600 text-white px-3 py-2 rounded-lg shadow-md hover:bg-blue-700 transition-colors flex items-center gap-2 text-sm font-medium" title="Download PDF"><Download size={16} /></button>
             
-            <button onClick={handleBulkPrint} disabled={isBulkPrinting || slipNavigation.length === 0} className="bg-gray-800 text-white px-3 py-2 rounded-lg shadow-md hover:bg-gray-900 transition-colors flex items-center gap-2 text-sm font-medium disabled:opacity-50" title="Cetak Semua Slip (A6)">
+            <button onClick={handleBulkPrint} disabled={isBulkPrinting || employeeCodes.length === 0} className="bg-gray-800 text-white px-3 py-2 rounded-lg shadow-md hover:bg-gray-900 transition-colors flex items-center gap-2 text-sm font-medium disabled:opacity-50" title="Cetak Semua Slip (A6)">
               {isBulkPrinting ? <Loader2 className="animate-spin" size={16}/> : <Printer size={16} />} Cetak Semua (A6)
             </button>
           </div>
@@ -1069,7 +941,7 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
             perusahaan: selectedCompany,
             periode: 'Bulanan',
             bulan: selectedMonth,
-            divisi: selectedDivisions
+            divisi: [selectedDivision]
         }}
       />
     </div>
