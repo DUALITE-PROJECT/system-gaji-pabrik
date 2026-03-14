@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { 
   ChevronLeft, ChevronRight, Printer, Search, Loader2, 
   FileText, Filter, Download, Building2, X, Layers,
-  Banknote, AlertCircle
+  Banknote, AlertCircle, ChevronDown, CheckCircle2, Square, CheckSquare
 } from 'lucide-react';
 import { supabase, isSupabaseConfigured } from '../../../lib/supabase';
 import { MoneyRequirementsModal } from './MoneyRequirementsModal';

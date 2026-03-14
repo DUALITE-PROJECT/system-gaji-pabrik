@@ -78,26 +78,70 @@ export const SalarySignatureList: React.FC<SalarySignatureListProps> = ({ isGaru
     const fetchInitData = async () => {
       if (!isSupabaseConfigured()) return;
       
-      const { data: months1 } = await supabase.from(reportTable).select('bulan, perusahaan, divisi');
-      
       let allMonths = new Set<string>();
-      if (months1) months1.forEach(m => allMonths.add(m.bulan));
+      const companySet = new Set<string>();
+      const divSet = new Set<string>();
 
-      // Fetch months from Borongan table as well
-      const { data: months2 } = await supabase.from(boronganTable).select('bulan');
-      months2?.forEach(m => allMonths.add(m.bulan));
+      const normalizeAndAddCompany = (name: string) => {
+        if (!name) return;
+        const cleanName = name.trim();
+        if (cleanName.toUpperCase() === 'BORONGAN' || cleanName.toUpperCase().includes('BORONGAN')) {
+            companySet.add('Borongan');
+        } else {
+            companySet.add(cleanName);
+        }
+      };
 
-      // Fetch months from Presensi Harian
-      const { data: months3 } = await supabase.from(presensiTable).select('bulan');
-      months3?.forEach(m => {
-          if (m.bulan) allMonths.add(m.bulan);
-      });
+      // Helper to safely add month with consistent formatting
+      const addMonthSafely = (m: string) => {
+          if (m) {
+              const parts = m.trim().split(/\s+/);
+              if (parts.length >= 2) {
+                  const month = parts[0].charAt(0).toUpperCase() + parts[0].slice(1).toLowerCase();
+                  allMonths.add(`${month} ${parts[1]}`);
+              } else {
+                  allMonths.add(m.trim());
+              }
+          }
+      };
 
-      // NEW: Fetch months from Employee Data (Master) to ensure month appears even if no report yet
-      const { data: months4 } = await supabase.from(employeeTable).select('bulan');
-      months4?.forEach(m => {
-          if (m.bulan) allMonths.add(m.bulan);
-      });
+      // Wrap each fetch in try-catch so one failure doesn't stop the others
+      try {
+        const { data: months1 } = await supabase.from(reportTable).select('bulan, perusahaan, divisi');
+        if (months1) {
+          months1.forEach(m => { 
+            addMonthSafely(m.bulan);
+            normalizeAndAddCompany(m.perusahaan);
+            if (m.divisi) divSet.add(m.divisi);
+          });
+        }
+      } catch (e) { console.warn("Error fetching from reportTable:", e); }
+
+      try {
+        const { data: months2 } = await supabase.from(boronganTable).select('bulan');
+        if (months2) months2.forEach(m => addMonthSafely(m.bulan));
+        
+        const { count: boronganCount } = await supabase.from(boronganTable).select('*', { count: 'exact', head: true });
+        if (boronganCount && boronganCount > 0) {
+            companySet.add('Borongan');
+        }
+      } catch (e) { console.warn("Error fetching from boronganTable:", e); }
+
+      try {
+        const { data: months3 } = await supabase.from(presensiTable).select('bulan');
+        if (months3) months3.forEach(m => addMonthSafely(m.bulan));
+      } catch (e) { console.warn("Error fetching from presensiTable:", e); }
+
+      try {
+        const { data: months4 } = await supabase.from(employeeTable).select('bulan');
+        if (months4) months4.forEach(m => addMonthSafely(m.bulan));
+      } catch (e) { console.warn("Error fetching from employeeTable:", e); }
+
+      // Selalu tambahkan bulan saat ini sebagai fallback agar selalu muncul di dropdown
+      const monthNames = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+      const now = new Date();
+      const currentMonthName = `${monthNames[now.getMonth()]} ${now.getFullYear()}`;
+      addMonthSafely(currentMonthName);
       
       // Chronological Sort
       const monthMap: Record<string, number> = {
@@ -122,37 +166,10 @@ export const SalarySignatureList: React.FC<SalarySignatureListProps> = ({ isGaru
       if (sortedMonths.length > 0 && !selectedMonth) {
         setSelectedMonth(sortedMonths[0]);
       } else if (!selectedMonth) {
-        const today = new Date();
-        const m = today.toLocaleString('id-ID', { month: 'long', year: 'numeric' });
-        setSelectedMonth(m);
-      }
-
-      const companySet = new Set<string>();
-      const normalizeAndAdd = (name: string) => {
-        if (!name) return;
-        const cleanName = name.trim();
-        if (cleanName.toUpperCase() === 'BORONGAN' || cleanName.toUpperCase().includes('BORONGAN')) {
-            companySet.add('Borongan');
-        } else {
-            companySet.add(cleanName);
-        }
-      };
-
-      months1?.forEach(m => normalizeAndAdd(m.perusahaan));
-      
-      // Check if Borongan table has data to enable "Borongan" option
-      const { count: boronganCount } = await supabase.from(boronganTable).select('*', { count: 'exact', head: true });
-      if (boronganCount && boronganCount > 0) {
-          companySet.add('Borongan');
+        setSelectedMonth(currentMonthName);
       }
 
       setUniqueCompanies(Array.from(companySet).sort());
-
-      // Divisions
-      const divSet = new Set<string>();
-      months1?.forEach(m => {
-        if (m.divisi) divSet.add(m.divisi);
-      });
       setUniqueDivisions(Array.from(divSet).sort());
     };
     fetchInitData();
@@ -753,7 +770,7 @@ export const SalarySignatureList: React.FC<SalarySignatureListProps> = ({ isGaru
                 placeholder="Cari Nama..." 
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-9 pr-4 py-2 border border-gray-200 bg-gray-50 rounded-lg text-sm focus:ring-2 focus:ring-erp-pink outline-none w-40"
+                className="pl-9 pr-4 py-2 border border-gray-200 bg-gray-50 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-erp-pink w-40"
               />
             </div>
           </div>
