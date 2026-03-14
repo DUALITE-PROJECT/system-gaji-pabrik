@@ -78,7 +78,7 @@ export const SalarySignatureList: React.FC<SalarySignatureListProps> = ({ isGaru
     const fetchInitData = async () => {
       if (!isSupabaseConfigured()) return;
       
-      let allMonths = new Set<string>();
+      const allMonths = new Set<string>();
       const companySet = new Set<string>();
       const divSet = new Set<string>();
 
@@ -105,9 +105,32 @@ export const SalarySignatureList: React.FC<SalarySignatureListProps> = ({ isGaru
           }
       };
 
+      // Helper to fetch all data to bypass 1000 row limit
+      const fetchAllData = async (tableName: string, selectCols: string) => {
+          let allData: any[] = [];
+          let from = 0;
+          const step = 1000;
+          let hasMore = true;
+          while (hasMore) {
+              const { data, error } = await supabase.from(tableName).select(selectCols).range(from, from + step - 1);
+              if (error) {
+                  console.warn(`Error fetching ${tableName}:`, error);
+                  break;
+              }
+              if (data && data.length > 0) {
+                  allData = [...allData, ...data];
+                  if (data.length < step) hasMore = false;
+                  else from += step;
+              } else {
+                  hasMore = false;
+              }
+          }
+          return allData;
+      };
+
       // Wrap each fetch in try-catch so one failure doesn't stop the others
       try {
-        const { data: months1 } = await supabase.from(reportTable).select('bulan, perusahaan, divisi');
+        const months1 = await fetchAllData(reportTable, 'bulan, perusahaan, divisi');
         if (months1) {
           months1.forEach(m => { 
             addMonthSafely(m.bulan);
@@ -118,7 +141,7 @@ export const SalarySignatureList: React.FC<SalarySignatureListProps> = ({ isGaru
       } catch (e) { console.warn("Error fetching from reportTable:", e); }
 
       try {
-        const { data: months2 } = await supabase.from(boronganTable).select('bulan');
+        const months2 = await fetchAllData(boronganTable, 'bulan');
         if (months2) months2.forEach(m => addMonthSafely(m.bulan));
         
         const { count: boronganCount } = await supabase.from(boronganTable).select('*', { count: 'exact', head: true });
@@ -128,13 +151,25 @@ export const SalarySignatureList: React.FC<SalarySignatureListProps> = ({ isGaru
       } catch (e) { console.warn("Error fetching from boronganTable:", e); }
 
       try {
-        const { data: months3 } = await supabase.from(presensiTable).select('bulan');
-        if (months3) months3.forEach(m => addMonthSafely(m.bulan));
+        const months3 = await fetchAllData(presensiTable, 'bulan, divisi, perusahaan');
+        if (months3) {
+            months3.forEach(m => {
+                addMonthSafely(m.bulan);
+                normalizeAndAddCompany(m.perusahaan);
+                if (m.divisi) divSet.add(m.divisi);
+            });
+        }
       } catch (e) { console.warn("Error fetching from presensiTable:", e); }
 
       try {
-        const { data: months4 } = await supabase.from(employeeTable).select('bulan');
-        if (months4) months4.forEach(m => addMonthSafely(m.bulan));
+        const months4 = await fetchAllData(employeeTable, 'bulan, divisi, perusahaan');
+        if (months4) {
+            months4.forEach(m => {
+                addMonthSafely(m.bulan);
+                normalizeAndAddCompany(m.perusahaan);
+                if (m.divisi) divSet.add(m.divisi);
+            });
+        }
       } catch (e) { console.warn("Error fetching from employeeTable:", e); }
 
       // Selalu tambahkan bulan saat ini sebagai fallback agar selalu muncul di dropdown
@@ -182,15 +217,37 @@ export const SalarySignatureList: React.FC<SalarySignatureListProps> = ({ isGaru
       setIsLoading(true);
 
       try {
-        // A. Fetch All Codes (Master Sequence)
-        const { data: allCodes1 } = await supabase.from(reportTable).select('kode').eq('bulan', selectedMonth);
-        const uniqueCodes = new Set(allCodes1?.map(c => c.kode) || []);
+        // Helper to fetch all data
+        const fetchAllData = async (query: any) => {
+            let allData: any[] = [];
+            let from = 0;
+            const step = 1000;
+            let hasMore = true;
+            while (hasMore) {
+                const { data, error } = await query.range(from, from + step - 1);
+                if (error) break;
+                if (data && data.length > 0) {
+                    allData = [...allData, ...data];
+                    if (data.length < step) hasMore = false;
+                    else from += step;
+                } else {
+                    hasMore = false;
+                }
+            }
+            return allData;
+        };
 
-        const { data: allCodes2 } = await supabase.from(boronganTable).select('kode').eq('bulan', selectedMonth);
+        // A. Fetch All Codes (Master Sequence)
+        const uniqueCodes = new Set<string>();
+        
+        const allCodes1 = await fetchAllData(supabase.from(reportTable).select('kode').eq('bulan', selectedMonth));
+        allCodes1?.forEach(c => uniqueCodes.add(c.kode));
+
+        const allCodes2 = await fetchAllData(supabase.from(boronganTable).select('kode').eq('bulan', selectedMonth));
         allCodes2?.forEach(c => uniqueCodes.add(c.kode));
 
         // Fallback: Fetch from Employee Master if report is empty
-        const { data: allCodes3 } = await supabase.from(employeeTable).select('kode').eq('bulan', selectedMonth);
+        const allCodes3 = await fetchAllData(supabase.from(employeeTable).select('kode').eq('bulan', selectedMonth));
         allCodes3?.forEach(c => uniqueCodes.add(c.kode));
         
         const sortedCodes = Array.from(uniqueCodes).sort();
@@ -218,7 +275,7 @@ export const SalarySignatureList: React.FC<SalarySignatureListProps> = ({ isGaru
             query1 = query1.eq('perusahaan', selectedCompany);
         }
 
-        const { data: res1 } = await query1;
+        const res1 = await fetchAllData(query1);
         
         // C. Fetch Data (Borongan)
         let res2: any[] = [];
@@ -235,8 +292,7 @@ export const SalarySignatureList: React.FC<SalarySignatureListProps> = ({ isGaru
              
              if (selectedPeriod !== 'Semua Periode') query2 = query2.eq('periode', selectedPeriod);
              
-             const { data } = await query2;
-             res2 = data || [];
+             res2 = await fetchAllData(query2);
         }
 
         // D. Fetch Master Employees (Fallback if report not generated)
@@ -258,7 +314,7 @@ export const SalarySignatureList: React.FC<SalarySignatureListProps> = ({ isGaru
              queryEmp = queryEmp.or(`nama.ilike.%${searchTerm}%,kode.ilike.%${searchTerm}%`);
         }
 
-        const { data: res3 } = await queryEmp;
+        const res3 = await fetchAllData(queryEmp);
 
         setReportData(res1 || []);
         setBoronganData(res2 || []);

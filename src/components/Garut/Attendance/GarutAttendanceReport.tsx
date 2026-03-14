@@ -62,41 +62,57 @@ export const GarutAttendanceReport: React.FC<GarutAttendanceReportProps> = ({
     const fetchOptions = async () => {
       if (!isSupabaseConfigured()) return;
       
+      const allMonths = new Set<string>();
+      const allDivisions = new Set<string>();
+      const allCompanies = new Set<string>();
+
+      const processData = (dataArray: any[]) => {
+          if (dataArray) {
+              dataArray.forEach(d => {
+                  if (d.bulan) allMonths.add(d.bulan);
+                  if (d.divisi) allDivisions.add(d.divisi);
+                  if (d.perusahaan && d.perusahaan.trim() !== '' && isNaN(parseInt(d.perusahaan.trim()[0]))) {
+                      allCompanies.add(d.perusahaan);
+                  }
+              });
+          }
+      };
+
+      // Helper to fetch all data to bypass 1000 row limit
+      const fetchAllData = async (tableName: string, selectCols: string) => {
+          let allData: any[] = [];
+          let from = 0;
+          const step = 1000;
+          let hasMore = true;
+          while (hasMore) {
+              const { data, error } = await supabase.from(tableName).select(selectCols).range(from, from + step - 1);
+              if (error) {
+                  console.warn(`Error fetching ${tableName}:`, error);
+                  break;
+              }
+              if (data && data.length > 0) {
+                  allData = [...allData, ...data];
+                  if (data.length < step) hasMore = false;
+                  else from += step;
+              } else {
+                  hasMore = false;
+              }
+          }
+          return allData;
+      };
+
       // 1. Ambil Bulan dari Master Karyawan
-      const { data: empData } = await supabase
-        .from('data_karyawan_pabrik_garut')
-        .select('bulan'); 
+      const empData = await fetchAllData('data_karyawan_pabrik_garut', 'bulan, divisi, perusahaan');
 
       // 2. Ambil Data dari Laporan (Bulan, Perusahaan, Divisi)
-      const { data: reportData } = await supabase
-        .from('laporan_bulanan_pabrik_garut')
-        .select('bulan, perusahaan, divisi');
+      const reportData = await fetchAllData('laporan_bulanan_pabrik_garut', 'bulan, perusahaan, divisi');
 
       // 3. Ambil Bulan dari Presensi Harian (Tambahan agar bulan baru muncul jika sudah ada presensi)
-      const { data: presensiData } = await supabase
-        .from('presensi_harian_pabrik_garut')
-        .select('bulan');
+      const presensiData = await fetchAllData('presensi_harian_pabrik_garut', 'bulan, divisi, perusahaan');
 
-      // Gabungkan bulan dari semua sumber
-      const allMonths = new Set<string>();
-
-      if (empData) {
-        empData.forEach(d => {
-            if (d.bulan) allMonths.add(d.bulan);
-        });
-      }
-
-      if (reportData) {
-         reportData.forEach(d => {
-             if (d.bulan) allMonths.add(d.bulan);
-         });
-      }
-
-      if (presensiData) {
-         presensiData.forEach(d => {
-             if (d.bulan) allMonths.add(d.bulan);
-         });
-      }
+      processData(empData || []);
+      processData(reportData || []);
+      processData(presensiData || []);
 
       // Selalu tambahkan bulan saat ini sebagai fallback
       const currentMonthName = new Date().toLocaleString('id-ID', { month: 'long', year: 'numeric' });
@@ -128,34 +144,8 @@ export const GarutAttendanceReport: React.FC<GarutAttendanceReportProps> = ({
         setFilterMonth(match || sortedMonths[0]);
       }
 
-      if (reportData) {
-         const divisions = [...new Set(reportData.map(d => d.divisi).filter(Boolean))].sort();
-         
-         // FIX: Filter perusahaan untuk membuang data kotor (misal "1 PERUSAHAAN")
-         let companies = [...new Set(
-             reportData.map(d => d.perusahaan)
-             .filter(p => p && p.trim() !== '' && isNaN(parseInt(p.trim()[0]))) 
-         )].sort();
-         
-         // Fallback: Jika kosong (belum ada laporan), ambil dari master tapi filter ketat
-         if (companies.length === 0) {
-             const { data: masterCompanies } = await supabase
-                .from('data_karyawan_pabrik_garut')
-                .select('perusahaan')
-                .limit(2000);
-             
-             if (masterCompanies) {
-                 companies = [...new Set(
-                     masterCompanies.map(d => d.perusahaan)
-                     .filter(p => p && (p.toUpperCase().includes('ADNAN') || p.toUpperCase().includes('HANAN')))
-                 )].sort();
-             }
-         }
-
-         setOptDivisions(divisions);
-         setOptCompanies(companies);
-      }
-      
+      setOptDivisions(Array.from(allDivisions).sort());
+      setOptCompanies(Array.from(allCompanies).sort());
       setOptPeriods(['Periode 1', 'Periode 2']);
     };
     fetchOptions();
