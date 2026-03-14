@@ -68,12 +68,16 @@ export const GarutAttendanceReport: React.FC<GarutAttendanceReportProps> = ({
         .select('bulan'); 
 
       // 2. Ambil Data dari Laporan (Bulan, Perusahaan, Divisi)
-      // FIX: Ambil bulan juga dari laporan agar jika master belum ada, bulan tetap muncul
       const { data: reportData } = await supabase
         .from('laporan_bulanan_pabrik_garut')
         .select('bulan, perusahaan, divisi');
 
-      // Gabungkan bulan dari kedua sumber
+      // 3. Ambil Bulan dari Presensi Harian (Tambahan agar bulan baru muncul jika sudah ada presensi)
+      const { data: presensiData } = await supabase
+        .from('presensi_harian_pabrik_garut')
+        .select('bulan');
+
+      // Gabungkan bulan dari semua sumber
       const allMonths = new Set<string>();
 
       if (empData) {
@@ -88,7 +92,17 @@ export const GarutAttendanceReport: React.FC<GarutAttendanceReportProps> = ({
          });
       }
 
-      // Sort Bulan Secara Kronologis
+      if (presensiData) {
+         presensiData.forEach(d => {
+             if (d.bulan) allMonths.add(d.bulan);
+         });
+      }
+
+      // Selalu tambahkan bulan saat ini sebagai fallback
+      const currentMonthName = new Date().toLocaleString('id-ID', { month: 'long', year: 'numeric' });
+      allMonths.add(currentMonthName);
+
+      // Sort Bulan Secara Kronologis (Bukan Alfabet)
       const monthMap: Record<string, number> = {
         'januari': 1, 'februari': 2, 'maret': 3, 'april': 4, 'mei': 5, 'juni': 6,
         'juli': 7, 'agustus': 8, 'september': 9, 'oktober': 10, 'november': 11, 'desember': 12
@@ -110,7 +124,6 @@ export const GarutAttendanceReport: React.FC<GarutAttendanceReportProps> = ({
 
       // Auto select latest month if not set
       if (sortedMonths.length > 0 && !filterMonth) {
-        const currentMonthName = new Date().toLocaleString('id-ID', { month: 'long', year: 'numeric' });
         const match = sortedMonths.find(m => m.toLowerCase() === currentMonthName.toLowerCase());
         setFilterMonth(match || sortedMonths[0]);
       }
@@ -514,6 +527,7 @@ export const GarutAttendanceReport: React.FC<GarutAttendanceReportProps> = ({
                       <td className="px-2 py-2 border-r border-gray-100 text-center font-bold text-blue-600">{item.grade_p1 || '-'}</td>
                       <td className="px-2 py-2 border-r border-gray-100 text-center font-bold text-purple-600">{item.grade_p2 || '-'}</td>
                       <td className="px-4 py-2 border-r border-gray-100 text-gray-600">{item.divisi}</td>
+                      
                       {/* ATTENDANCE DATA */}
                       {viewMode === 'kehadiran' && (
                         <>
