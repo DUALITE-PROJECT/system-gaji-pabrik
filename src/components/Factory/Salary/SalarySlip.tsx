@@ -30,7 +30,12 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
   const [selectedMonth, setSelectedMonth] = useState('');
   const [selectedPeriod, setSelectedPeriod] = useState('Semua Periode'); // Added missing state
   const [selectedCompany, setSelectedCompany] = useState('Semua Perusahaan');
-  const [selectedDivision, setSelectedDivision] = useState('Semua Divisi');
+  
+  // Multi-select Division State
+  const [selectedDivisions, setSelectedDivisions] = useState<string[]>(['Semua Divisi']);
+  const [isDivDropdownOpen, setIsDivDropdownOpen] = useState(false);
+  const divDropdownRef = useRef<HTMLDivElement>(null);
+
   const [searchTerm, setSearchTerm] = useState('');
   
   const [uniqueMonths, setUniqueMonths] = useState<string[]>([]);
@@ -61,6 +66,17 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
   const boronganTable = isGarut ? 'data_gaji_borongan_pabrik_garut' : 'gaji_borongan';
   const presensiTable = isGarut ? 'presensi_harian_pabrik_garut' : 'presensi_harian_pabrik';
   const employeeTable = isGarut ? 'data_karyawan_pabrik_garut' : 'karyawan_pabrik';
+
+  // --- CLICK OUTSIDE HANDLER ---
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (divDropdownRef.current && !divDropdownRef.current.contains(event.target as Node)) {
+        setIsDivDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   // --- HELPER: COMPANY NAME MAPPING ---
   const getDisplayCompanyName = (name: string) => {
@@ -314,7 +330,7 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
           .eq('bulan', selectedMonth);
 
         if (selectedCompany !== 'Semua Perusahaan') query = query.eq('perusahaan', selectedCompany);
-        if (selectedDivision !== 'Semua Divisi') query = query.eq('divisi', selectedDivision);
+        if (!selectedDivisions.includes('Semua Divisi')) query = query.in('divisi', selectedDivisions);
         // Note: Period filter is not applied here as Staff typically doesn't have period column in report table, 
         // but we keep the state for UI consistency if needed later.
         
@@ -358,7 +374,7 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
     };
 
     fetchEmployees();
-  }, [selectedMonth, selectedCompany, selectedDivision, searchTerm, isGarut, reportTable, boronganTable]);
+  }, [selectedMonth, selectedCompany, selectedDivisions, searchTerm, isGarut, reportTable, boronganTable]);
 
   // --- 4. FETCH CURRENT SLIP DETAIL ---
   useEffect(() => {
@@ -381,7 +397,7 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
           .eq('kode', currentKode);
 
         if (selectedCompany !== 'Semua Perusahaan') query = query.eq('perusahaan', selectedCompany);
-        if (selectedDivision !== 'Semua Divisi') query = query.eq('divisi', selectedDivision);
+        if (!selectedDivisions.includes('Semua Divisi')) query = query.in('divisi', selectedDivisions);
 
         const { data: regularData } = await query.maybeSingle();
 
@@ -414,7 +430,7 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
     };
 
     fetchSlip();
-  }, [currentIndex, employeeCodes, selectedMonth, selectedCompany, selectedDivision]);
+  }, [currentIndex, employeeCodes, selectedMonth, selectedCompany, selectedDivisions]);
 
   // --- HANDLERS ---
   const handlePrev = () => setCurrentIndex(prev => (prev > 0 ? prev - 1 : employeeCodes.length - 1));
@@ -439,6 +455,36 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
     return String(index + 1).padStart(3, '0');
   };
 
+  // --- MULTI-SELECT HANDLER ---
+  const handleDivisionToggle = (div: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+
+    setSelectedDivisions(prev => {
+      if (div === 'Semua Divisi') {
+        return ['Semua Divisi'];
+      }
+      
+      let newSelection = [...prev];
+      
+      if (newSelection.includes('Semua Divisi')) {
+        newSelection = [];
+      }
+
+      if (newSelection.includes(div)) {
+        newSelection = newSelection.filter(d => d !== div);
+      } else {
+        newSelection.push(div);
+      }
+
+      if (newSelection.length === 0) {
+        return ['Semua Divisi'];
+      }
+      
+      return newSelection;
+    });
+  };
+
   // --- BULK PRINT ---
   const handleBulkPrint = async () => {
     setIsBulkPrinting(true);
@@ -450,7 +496,7 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
           .eq('bulan', selectedMonth);
 
         if (selectedCompany !== 'Semua Perusahaan') query = query.eq('perusahaan', selectedCompany);
-        if (selectedDivision !== 'Semua Divisi') query = query.eq('divisi', selectedDivision);
+        if (!selectedDivisions.includes('Semua Divisi')) query = query.in('divisi', selectedDivisions);
         
         if (searchTerm) {
             query = query.or(`nama.ilike.%${searchTerm}%,kode.ilike.%${searchTerm}%`);
@@ -529,7 +575,7 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
           .eq('bulan', selectedMonth);
 
         if (selectedCompany !== 'Semua Perusahaan') query = query.eq('perusahaan', selectedCompany);
-        if (selectedDivision !== 'Semua Divisi') query = query.eq('divisi', selectedDivision);
+        if (!selectedDivisions.includes('Semua Divisi')) query = query.in('divisi', selectedDivisions);
 
         const { data: regularData } = await query;
         if (regularData) allMoneyData = [...allMoneyData, ...regularData];
@@ -847,17 +893,44 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
               </select>
             </div>
 
-            {/* Division Filter */}
-            <div className="relative">
-              <Layers size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"/>
-              <select 
-                value={selectedDivision} 
-                onChange={(e) => setSelectedDivision(e.target.value)} 
-                className="pl-9 pr-4 py-2 border border-gray-200 bg-gray-50 rounded-lg text-sm font-medium focus:ring-2 focus:ring-erp-pink outline-none cursor-pointer"
+            {/* MULTI-SELECT DIVISION FILTER */}
+            <div className="relative" ref={divDropdownRef}>
+              <button 
+                onClick={() => setIsDivDropdownOpen(!isDivDropdownOpen)}
+                className="pl-9 pr-4 py-2 border border-gray-200 bg-gray-50 rounded-lg text-sm font-medium focus:ring-2 focus:ring-erp-pink outline-none flex items-center justify-between w-48 bg-white"
               >
-                <option value="Semua Divisi">Semua Divisi</option>
-                {uniqueDivisions.map(d => <option key={d} value={d}>{d}</option>)}
-              </select>
+                <Layers size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"/>
+                <span className="truncate text-left">
+                  {selectedDivisions.includes('Semua Divisi') ? 'Semua Divisi' : `${selectedDivisions.length} Divisi Terpilih`}
+                </span>
+                <ChevronDown size={14} className="text-gray-400 ml-2"/>
+              </button>
+              
+              {isDivDropdownOpen && (
+                <div 
+                  className="absolute top-full left-0 mt-1 w-64 bg-white border border-gray-200 rounded-lg shadow-xl z-50 max-h-60 overflow-y-auto p-1"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div 
+                    className={`px-3 py-2 text-sm cursor-pointer hover:bg-gray-50 rounded flex items-center gap-2 ${selectedDivisions.includes('Semua Divisi') ? 'text-erp-pink font-bold' : 'text-gray-700'}`}
+                    onClick={(e) => handleDivisionToggle('Semua Divisi', e)}
+                  >
+                    {selectedDivisions.includes('Semua Divisi') ? <CheckCircle2 size={16} className="text-erp-pink"/> : <Square size={16} className="text-gray-300"/>}
+                    Semua Divisi
+                  </div>
+                  <div className="border-t border-gray-100 my-1"></div>
+                  {uniqueDivisions.map(div => (
+                    <div 
+                      key={div}
+                      className={`px-3 py-2 text-sm cursor-pointer hover:bg-gray-50 rounded flex items-center gap-2 ${selectedDivisions.includes(div) ? 'text-erp-pink font-bold' : 'text-gray-700'}`}
+                      onClick={(e) => handleDivisionToggle(div, e)}
+                    >
+                      {selectedDivisions.includes(div) ? <CheckSquare size={16} className="text-erp-pink"/> : <Square size={16} className="text-gray-300"/>}
+                      {div}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Search */}
@@ -941,7 +1014,7 @@ export const SalarySlip: React.FC<SalarySlipProps> = ({ isGarut = false }) => {
             perusahaan: selectedCompany,
             periode: 'Bulanan',
             bulan: selectedMonth,
-            divisi: [selectedDivision]
+            divisi: selectedDivisions
         }}
       />
     </div>

@@ -1,29 +1,16 @@
--- [DEBUG] Analisa Kenapa Bonus Borongan 0
--- Jalankan script ini di SQL Editor untuk melihat hasilnya
+-- SCRIPT UNTUK DEBUGGING BORONGAN GARUT
 
--- 1. Cek Data Absensi untuk Karyawan Tertentu
-SELECT 
-    tanggal, kode, nama, kehadiran, lembur, keterangan
-FROM input_absensi_harian_borongan
-WHERE kode = 'B001' AND bulan ILIKE '%Maret%';
+-- 1. Cek isi tabel presensi borongan (Apakah data masuk?)
+SELECT * FROM presensi_harian_borongan_pabrik_garut LIMIT 10;
 
--- 2. Cek Master Gaji yang Cocok
-SELECT 
-    m.grade, m.bulan, m.gaji_pokok, m.gaji_harian, m.bonus
-FROM master_gaji m
-JOIN input_absensi_harian_borongan a ON m.grade = a.grade
-WHERE a.kode = 'B001' AND a.bulan ILIKE '%Maret%'
-LIMIT 1;
+-- 2. Cek isi tabel gaji borongan (Apakah sync berjalan?)
+SELECT * FROM gaji_harian_borongan_pabrik_garut LIMIT 10;
 
--- 3. Cek Output Produksi pada Tanggal Tersebut
-SELECT 
-    tanggal, SUM(total_hasil) as total_output
-FROM output_harian_pabrik
-WHERE tanggal IN (SELECT tanggal FROM input_absensi_harian_borongan WHERE kode = 'B001' AND bulan ILIKE '%Maret%')
-GROUP BY tanggal;
+-- 3. Cek Output Produksi (Apakah ada output di tanggal tersebut?)
+SELECT tanggal, SUM(total_hasil) as total_output 
+FROM output_harian_pabrik 
+GROUP BY tanggal 
+ORDER BY tanggal DESC LIMIT 10;
 
--- 4. Cek Data Akhir di Tabel Gaji Harian
-SELECT 
-    tanggal, kode, gaji_dasar, porsi_awal, jam_kerja, sisa_potongan, bonus_redistribusi, gaji, bonus, info_debug
-FROM gaji_harian_borongan_pabrik_garut
-WHERE kode = 'B001' AND bulan ILIKE '%Maret%';
+-- 4. Cek Master Gaji (Apakah grade yang diinput ada di master?)
+SELECT * FROM master_gaji;

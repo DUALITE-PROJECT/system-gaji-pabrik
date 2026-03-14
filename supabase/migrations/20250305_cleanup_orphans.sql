@@ -1,36 +1,27 @@
--- Fungsi untuk menghapus Laporan Bulanan yang tidak memiliki data di Presensi Harian
-CREATE OR REPLACE FUNCTION cleanup_monthly_report_orphans(p_bulan text DEFAULT NULL)
+-- FUNGSI CLEANUP ORPHANS (Menghapus data laporan yang tidak memiliki presensi)
+CREATE OR REPLACE FUNCTION public.cleanup_monthly_report_orphans(p_bulan TEXT)
 RETURNS text
 LANGUAGE plpgsql
-AS $$
+SECURITY DEFINER
+AS $function$
 DECLARE
-    deleted_count int;
+    v_deleted_count INT := 0;
 BEGIN
-    -- Jika bulan spesifik dipilih
-    IF p_bulan IS NOT NULL AND p_bulan != '' THEN
-        DELETE FROM public.laporan_bulanan_pabrik l
-        WHERE l.bulan = p_bulan
-        AND NOT EXISTS (
-            SELECT 1
-            FROM public.presensi_harian_pabrik p
-            WHERE p.bulan = l.bulan
-              AND p.kode = l.kode
-              AND p.perusahaan = l.perusahaan
-        );
-    -- Jika tidak ada filter bulan (bersihkan semua)
-    ELSE
-        DELETE FROM public.laporan_bulanan_pabrik l
-        WHERE NOT EXISTS (
-            SELECT 1
-            FROM public.presensi_harian_pabrik p
-            WHERE p.bulan = l.bulan
-              AND p.kode = l.kode
-              AND p.perusahaan = l.perusahaan
-        );
-    END IF;
+    -- Hapus dari laporan_bulanan_pabrik jika kode tidak ada di presensi_harian_pabrik pada bulan yang sama
+    DELETE FROM public.laporan_bulanan_pabrik l
+    WHERE l.bulan = p_bulan
+      AND NOT EXISTS (
+          SELECT 1 
+          FROM public.presensi_harian_pabrik p 
+          WHERE p.kode = l.kode 
+            AND p.bulan = l.bulan
+      );
+      
+    GET DIAGNOSTICS v_deleted_count = ROW_COUNT;
     
-    GET DIAGNOSTICS deleted_count = ROW_COUNT;
-    
-    RETURN 'Berhasil membersihkan ' || deleted_count || ' data laporan yang tidak valid (tanpa sumber presensi).';
+    RETURN 'Cleanup selesai. Menghapus ' || v_deleted_count || ' data yatim.';
 END;
-$$;
+$function$;
+
+GRANT EXECUTE ON FUNCTION public.cleanup_monthly_report_orphans(TEXT) TO authenticated, service_role;
+NOTIFY pgrst, 'reload config';

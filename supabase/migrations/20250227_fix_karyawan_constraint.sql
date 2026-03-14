@@ -1,8 +1,8 @@
--- 1. Hapus constraint unik lama pada kolom 'kode'
-ALTER TABLE public.data_karyawan_pabrik DROP CONSTRAINT IF EXISTS data_karyawan_pabrik_kode_key;
+-- Hapus constraint lama jika ada
+ALTER TABLE public.karyawan_pabrik DROP CONSTRAINT IF EXISTS unique_karyawan_kode_bulan;
 
--- 2. Tambahkan constraint unik baru kombinasi (kode, bulan)
--- Ini memungkinkan kode yang sama diinput lagi di bulan yang berbeda
-ALTER TABLE public.data_karyawan_pabrik ADD CONSTRAINT unique_kode_bulan UNIQUE (kode, bulan);
+-- Tambahkan constraint baru yang benar
+ALTER TABLE public.karyawan_pabrik ADD CONSTRAINT unique_karyawan_kode_bulan UNIQUE (kode, bulan);
 
+-- Refresh cache
 NOTIFY pgrst, 'reload config';

@@ -46,7 +46,7 @@ DECLARE
     v_divisi TEXT;
     v_keluar_masuk TEXT;
     v_current_grade TEXT;
-    
+
     -- Variabel Presensi
     v_h NUMERIC := 0;
     v_set_h NUMERIC := 0;
@@ -55,126 +55,92 @@ DECLARE
     v_t_b INT := 0; v_t_tb INT := 0;
     v_lp INT := 0; v_tm INT := 0;
     v_lembur NUMERIC := 0;
-    
+
     -- Variabel Master Gaji
     v_master_gapok NUMERIC := 0;
     v_master_lembur NUMERIC := 0;
     v_master_makan NUMERIC := 0;
     v_master_hadir NUMERIC := 0;
     v_master_bonus NUMERIC := 0;
-    
+
     -- Variabel Konfigurasi
     v_config_hari NUMERIC;
     v_pembagi_bulan NUMERIC;
 
-    -- Variabel Hasil Perhitungan
-    v_final_gapok NUMERIC := 0;
-    v_final_lembur NUMERIC := 0;
-    v_final_makan NUMERIC := 0;
-    v_final_hadir NUMERIC := 0;
-    v_final_bonus NUMERIC := 0;
-    v_hasil_gaji NUMERIC := 0;
-
-    -- Variabel Potongan/Denda
-    v_denda_flat NUMERIC := 0;
-    v_pot_makan_lptm NUMERIC := 0;
-    v_pot_hadir_lptm NUMERIC := 0;
+    -- Variabel Hasil Hitung
+    v_hasil_gapok NUMERIC := 0;
+    v_hasil_lembur NUMERIC := 0;
+    v_hasil_makan NUMERIC := 0;
+    v_hasil_hadir NUMERIC := 0;
+    v_hasil_bonus NUMERIC := 0;
+    v_total_gaji NUMERIC := 0;
     
-    -- Variabel Manual Input
     v_kasbon NUMERIC := 0;
     v_penyesuaian NUMERIC := 0;
 
-    -- Variabel Loop/Helper
-    r RECORD;
+    -- Variabel Bantuan
+    v_denda_flat NUMERIC := 0;
+    v_potongan_makan NUMERIC := 0;
+    v_potongan_hadir NUMERIC := 0;
+    v_total_pelanggaran INT := 0;
+    v_total_pengurang_hari INT := 0;
+
+    -- Variabel Streak Logic
     v_current_status TEXT := '';
     v_current_streak INT := 0;
     v_kehadiran_clean TEXT;
+    r RECORD;
     
-    -- Cek Libur
-    v_has_libur_pribadi BOOLEAN := FALSE;
-    v_has_libur_perusahaan BOOLEAN := FALSE;
-    v_is_borongan BOOLEAN := FALSE;
+    -- Variabel Data Periode 1 (Untuk akumulasi di Periode 2)
+    v_p1_lp INT := 0;
+    v_p1_tm INT := 0;
 
 BEGIN
-    -- 1. Ambil Metadata Karyawan
+    -- [CEK BORONGAN] Jangan hitung jika perusahaan mengandung kata BORONGAN
+    IF UPPER(p_perusahaan) LIKE '%BORONGAN%' THEN
+        RETURN 'Skip Borongan';
+    END IF;
+
+    -- 1. Ambil Metadata Karyawan (Prioritas: Karyawan -> Presensi)
     SELECT nama, grade_p1, grade_p2, divisi, keterangan INTO v_nama, v_grade_p1, v_grade_p2, v_divisi, v_keluar_masuk
-    FROM public.data_karyawan_pabrik_garut
-    WHERE kode = p_kode AND bulan = p_bulan
-    LIMIT 1;
+    FROM public.karyawan_pabrik WHERE kode = p_kode AND bulan = p_bulan LIMIT 1;
 
     IF v_nama IS NULL THEN
-        RETURN 'Karyawan tidak ditemukan di Master Karyawan.';
+        SELECT nama, grade_p1, grade_p2, divisi, keterangan INTO v_nama, v_grade_p1, v_grade_p2, v_divisi, v_keluar_masuk
+        FROM public.presensi_harian_pabrik WHERE kode = p_kode AND bulan = p_bulan ORDER BY tanggal DESC LIMIT 1;
     END IF;
 
-    -- Tentukan Grade berdasarkan Periode
-    IF p_target_periode = 'Periode 2' THEN
-        v_current_grade := v_grade_p2;
-    ELSE
-        v_current_grade := v_grade_p1;
-    END IF;
+    v_current_grade := CASE WHEN p_target_periode = 'Periode 1' THEN v_grade_p1 ELSE v_grade_p2 END;
 
-    -- Cek apakah Borongan
-    IF UPPER(p_perusahaan) LIKE '%BORONGAN%' OR UPPER(v_divisi) LIKE '%BORONGAN%' THEN
-        v_is_borongan := TRUE;
-    END IF;
-
-    -- 2. Ambil Master Gaji
-    SELECT gaji_harian, lembur, uang_makan, uang_kehadiran, bonus
-    INTO v_master_gapok, v_master_lembur, v_master_makan, v_master_hadir, v_master_bonus
-    FROM public.master_gaji
-    WHERE grade = v_current_grade AND bulan = p_bulan
-    LIMIT 1;
-
-    -- Fallback Master Gaji jika tidak ada di bulan tsb (ambil yg terbaru)
-    IF v_master_gapok IS NULL THEN
-        SELECT gaji_harian, lembur, uang_makan, uang_kehadiran, bonus
-        INTO v_master_gapok, v_master_lembur, v_master_makan, v_master_hadir, v_master_bonus
-        FROM public.master_gaji
-        WHERE grade = v_current_grade
-        ORDER BY created_at DESC
-        LIMIT 1;
-    END IF;
-
-    -- 3. Ambil Konfigurasi Pembagi Bulan
-    SELECT jumlah_hari_kerja INTO v_config_hari
-    FROM public.konfigurasi_gaji_bulanan
-    WHERE bulan = p_bulan;
-
-    -- 4. Hitung Presensi (Hanya untuk Periode yang dituju)
+    -- 2. Hitung Presensi (Streak Logic)
     FOR r IN 
-        SELECT kehadiran, lembur, keterangan 
-        FROM public.presensi_harian_pabrik_garut 
-        WHERE kode = p_kode AND bulan = p_bulan AND periode = p_target_periode
+        SELECT kehadiran, lembur 
+        FROM public.presensi_harian_pabrik 
+        WHERE kode = p_kode AND bulan = p_bulan AND periode = p_target_periode AND perusahaan = p_perusahaan
         ORDER BY tanggal ASC
     LOOP
         v_kehadiran_clean := UPPER(TRIM(r.kehadiran));
         
-        -- Hitung H, Set.H, LP, TM
+        -- Hitung Agregat Dasar
         IF v_kehadiran_clean IN ('H', '1', 'HADIR') THEN v_h := v_h + 1; END IF;
         IF v_kehadiran_clean IN ('0.5', 'SETENGAH') THEN v_set_h := v_set_h + 1; END IF;
         IF v_kehadiran_clean = 'LP' THEN v_lp := v_lp + 1; END IF;
         IF v_kehadiran_clean = 'TM' THEN v_tm := v_tm + 1; END IF;
-
-        -- Hitung Lembur
-        IF r.lembur IS NOT NULL AND r.lembur <> '' THEN
+        
+        IF r.lembur IS NOT NULL AND r.lembur != '' AND r.lembur != '0' THEN
             BEGIN
                 v_lembur := v_lembur + CAST(REGEXP_REPLACE(r.lembur, '[^0-9\.]', '', 'g') AS NUMERIC);
             EXCEPTION WHEN OTHERS THEN NULL; END;
         END IF;
 
-        -- Cek Keterangan Libur
-        IF LOWER(r.keterangan) LIKE '%libur pribadi%' THEN v_has_libur_pribadi := TRUE; END IF;
-        IF LOWER(r.keterangan) LIKE '%libur perusahaan%' THEN v_has_libur_perusahaan := TRUE; END IF;
-
-        -- Logika Streak (S, I, T)
-        IF v_kehadiran_clean IN ('I', 'S', 'T', 'A', 'ALPHA') THEN
-            -- Normalisasi A/Alpha menjadi T
-            IF v_kehadiran_clean IN ('A', 'ALPHA') THEN v_kehadiran_clean := 'T'; END IF;
+        -- Streak Logic (S, I, T)
+        IF v_kehadiran_clean IN ('I', 'S', 'A', 'T') THEN
+            IF v_kehadiran_clean = 'A' THEN v_kehadiran_clean := 'T'; END IF; -- Treat Alpha as Telat/Tanpa Keterangan
 
             IF v_kehadiran_clean = v_current_status THEN
                 v_current_streak := v_current_streak + 1;
             ELSE
-                -- Simpan streak sebelumnya
+                -- Simpan streak sebelumnya jika ada
                 IF v_current_status = 'I' THEN IF v_current_streak > 1 THEN v_i_b := v_i_b + v_current_streak; ELSE v_i_tb := v_i_tb + v_current_streak; END IF; END IF;
                 IF v_current_status = 'S' THEN IF v_current_streak > 1 THEN v_s_b := v_s_b + v_current_streak; ELSE v_s_tb := v_s_tb + v_current_streak; END IF; END IF;
                 IF v_current_status = 'T' THEN IF v_current_streak > 1 THEN v_t_b := v_t_b + v_current_streak; ELSE v_t_tb := v_t_tb + v_current_streak; END IF; END IF;
@@ -183,7 +149,7 @@ BEGIN
                 v_current_streak := 1;
             END IF;
         ELSE
-            -- Break streak
+            -- Putus streak
             IF v_current_status = 'I' THEN IF v_current_streak > 1 THEN v_i_b := v_i_b + v_current_streak; ELSE v_i_tb := v_i_tb + v_current_streak; END IF; END IF;
             IF v_current_status = 'S' THEN IF v_current_streak > 1 THEN v_s_b := v_s_b + v_current_streak; ELSE v_s_tb := v_s_tb + v_current_streak; END IF; END IF;
             IF v_current_status = 'T' THEN IF v_current_streak > 1 THEN v_t_b := v_t_b + v_current_streak; ELSE v_t_tb := v_t_tb + v_current_streak; END IF; END IF;
@@ -192,108 +158,137 @@ BEGIN
             v_current_streak := 0;
         END IF;
     END LOOP;
-
-    -- Simpan streak terakhir di akhir loop
+    
+    -- Simpan sisa streak di akhir loop
     IF v_current_status = 'I' THEN IF v_current_streak > 1 THEN v_i_b := v_i_b + v_current_streak; ELSE v_i_tb := v_i_tb + v_current_streak; END IF; END IF;
     IF v_current_status = 'S' THEN IF v_current_streak > 1 THEN v_s_b := v_s_b + v_current_streak; ELSE v_s_tb := v_s_tb + v_current_streak; END IF; END IF;
     IF v_current_status = 'T' THEN IF v_current_streak > 1 THEN v_t_b := v_t_b + v_current_streak; ELSE v_t_tb := v_t_tb + v_current_streak; END IF; END IF;
 
-    -- 5. Ambil Data Penyesuaian & Kasbon
-    SELECT COALESCE(penyesuaian_bonus, 0), COALESCE(kasbon, 0)
-    INTO v_penyesuaian, v_kasbon
-    FROM public.penyesuaian_gaji_pabrik
-    WHERE kode = p_kode AND bulan = p_bulan AND periode = p_target_periode
-    LIMIT 1;
+    -- 3. Ambil Master Gaji
+    SELECT gaji_harian, lembur, uang_makan, uang_kehadiran, bonus INTO v_master_gapok, v_master_lembur, v_master_makan, v_master_hadir, v_master_bonus
+    FROM public.master_gaji WHERE grade = v_current_grade AND bulan = p_bulan LIMIT 1;
 
-    -- 6. PERHITUNGAN GAJI (V38 LOGIC)
+    IF v_master_gapok IS NULL THEN
+        -- Fallback ke master gaji terbaru jika bulan ini belum ada
+        SELECT gaji_harian, lembur, uang_makan, uang_kehadiran, bonus INTO v_master_gapok, v_master_lembur, v_master_makan, v_master_hadir, v_master_bonus
+        FROM public.master_gaji WHERE grade = v_current_grade ORDER BY created_at DESC LIMIT 1;
+    END IF;
+
+    v_master_gapok := COALESCE(v_master_gapok, 0);
+    v_master_lembur := COALESCE(v_master_lembur, 0);
+    v_master_makan := COALESCE(v_master_makan, 0);
+    v_master_hadir := COALESCE(v_master_hadir, 0);
+    v_master_bonus := COALESCE(v_master_bonus, 0);
+
+    -- 4. Ambil Konfigurasi Hari Kerja
+    SELECT jumlah_hari_kerja INTO v_config_hari FROM public.konfigurasi_gaji_bulanan WHERE bulan = p_bulan LIMIT 1;
     
-    -- Tentukan Pembagi Bulan (Jika null, gunakan total hari hadir aktual)
-    IF v_config_hari IS NOT NULL AND v_config_hari > 0 THEN
-        v_pembagi_bulan := v_config_hari;
-    ELSE
-        -- Jika tidak diset, pembagi adalah total hari dia seharusnya hadir (H + SetH + LP + TM + I + S + T)
-        v_pembagi_bulan := v_h + v_set_h + v_lp + v_tm + v_i_b + v_i_tb + v_s_b + v_s_tb + v_t_b + v_t_tb;
+    IF v_config_hari IS NULL OR v_config_hari = 0 THEN
+        v_pembagi_bulan := v_h + v_set_h;
         IF v_pembagi_bulan = 0 THEN v_pembagi_bulan := 26; END IF; -- Fallback aman
-    END IF;
-
-    -- A. GAPOK & LEMBUR (Dihitung Setiap Periode)
-    -- V38: LP dan TM TETAP DIBAYAR GAPOKNYA (H + SetH + LP + TM)
-    v_final_gapok := ((v_h + v_lp + v_tm) * COALESCE(v_master_gapok, 0)) + (v_set_h * (COALESCE(v_master_gapok, 0) / 2));
-    v_final_lembur := v_lembur * COALESCE(v_master_lembur, 0);
-
-    -- B. TUNJANGAN & BONUS (HANYA DIHITUNG DI PERIODE 2)
-    IF p_target_periode = 'Periode 2' THEN
-        
-        -- Denda Flat (I, S, T) -> Mengurangi Uang Makan & Kehadiran
-        v_denda_flat := (v_i_b + v_i_tb + v_s_b + v_s_tb + v_t_b + v_t_tb) * 10000;
-
-        -- Potongan LP & TM (Hanya mengurangi Uang Makan & Kehadiran, BUKAN Gapok)
-        v_pot_makan_lptm := (v_lp + v_tm) * (COALESCE(v_master_makan, 0) / v_pembagi_bulan);
-        v_pot_hadir_lptm := (v_lp + v_tm) * (COALESCE(v_master_hadir, 0) / v_pembagi_bulan);
-
-        -- Hitung Uang Makan (Net Bulanan)
-        v_final_makan := COALESCE(v_master_makan, 0) - v_denda_flat - v_pot_makan_lptm;
-        IF v_final_makan < 0 THEN v_final_makan := 0; END IF;
-
-        -- Hitung Uang Kehadiran (Net Bulanan)
-        v_final_hadir := COALESCE(v_master_hadir, 0) - v_denda_flat - v_pot_hadir_lptm;
-        IF v_final_hadir < 0 THEN v_final_hadir := 0; END IF;
-
-        -- Hitung Bonus
-        IF (v_keluar_masuk IS NOT NULL AND v_keluar_masuk <> '') OR 
-           (v_i_b + v_i_tb + v_s_b + v_s_tb + v_t_b + v_t_tb > 0) OR 
-           v_has_libur_pribadi THEN
-            v_final_bonus := 0; -- Hangus
-        ELSIF v_lp > 0 OR v_has_libur_perusahaan THEN
-            -- Dipotong
-            IF v_is_borongan THEN
-                v_final_bonus := COALESCE(v_master_bonus, 0) / 8;
-            ELSE
-                v_final_bonus := COALESCE(v_master_bonus, 0) / 2;
-            END IF;
-        ELSE
-            -- Full
-            IF v_is_borongan THEN
-                v_final_bonus := COALESCE(v_master_bonus, 0) / 4;
-            ELSE
-                v_final_bonus := COALESCE(v_master_bonus, 0);
-            END IF;
-        END IF;
-
     ELSE
-        -- Periode 1: Tunjangan & Bonus = 0
-        v_final_makan := 0;
-        v_final_hadir := 0;
-        v_final_bonus := 0;
+        v_pembagi_bulan := v_config_hari;
     END IF;
 
-    -- 7. TOTAL GAJI
-    v_hasil_gaji := v_final_gapok + v_final_lembur + v_final_makan + v_final_hadir + v_final_bonus + COALESCE(v_penyesuaian, 0) - COALESCE(v_kasbon, 0);
+    -- 5. Hitung Gaji Pokok & Lembur (Harian)
+    -- V38 FIX: Gapok HANYA dihitung dari H dan Set.H (LP dan TM TIDAK DAPAT GAPOK)
+    v_hasil_gapok := (v_h * v_master_gapok) + (v_set_h * (v_master_gapok / 2));
+    v_hasil_lembur := v_lembur * v_master_lembur;
 
-    -- 8. UPSERT KE TABEL LAPORAN BULANAN
-    INSERT INTO public.laporan_bulanan_pabrik_garut (
+    -- 6. Hitung Tunjangan (Hanya di Periode 2)
+    IF p_target_periode = 'Periode 2' THEN
+        -- Ambil data LP dan TM dari Periode 1 untuk diakumulasi
+        SELECT lp, tm INTO v_p1_lp, v_p1_tm FROM public.laporan_bulanan_pabrik WHERE kode = p_kode AND bulan = p_bulan AND periode = 'Periode 1' AND perusahaan = p_perusahaan LIMIT 1;
+        v_p1_lp := COALESCE(v_p1_lp, 0);
+        v_p1_tm := COALESCE(v_p1_tm, 0);
+
+        v_total_pelanggaran := v_s_b + v_i_b + v_t_b + v_s_tb + v_i_tb + v_t_tb;
+        
+        -- V38 FIX: LP dan TM memotong Uang Makan dan Kehadiran
+        v_total_pengurang_hari := v_lp + v_p1_lp + v_tm + v_p1_tm; 
+
+        -- Denda Flat (Progresif untuk _B, Flat 10k untuk _TB)
+        v_denda_flat := public.calculate_progressive_penalty(v_s_b) + 
+                        public.calculate_progressive_penalty(v_i_b) + 
+                        public.calculate_progressive_penalty(v_t_b) + 
+                        ((v_s_tb + v_i_tb + v_t_tb) * 10000);
+
+        -- Potongan Harian (Makan & Hadir) karena LP / TM
+        v_potongan_makan := (v_master_makan / v_pembagi_bulan) * v_total_pengurang_hari;
+        v_potongan_hadir := (v_master_hadir / v_pembagi_bulan) * v_total_pengurang_hari;
+
+        -- Hasil Bersih Tunjangan
+        v_hasil_makan := GREATEST(0, v_master_makan - v_denda_flat - v_potongan_makan);
+        v_hasil_hadir := GREATEST(0, v_master_hadir - v_denda_flat - v_potongan_hadir);
+
+        -- Logika Bonus
+        IF v_keluar_masuk IS NOT NULL AND v_keluar_masuk != '' THEN
+            v_hasil_bonus := 0; -- Hangus jika keluar/masuk
+        ELSIF v_total_pelanggaran > 0 THEN
+            v_hasil_bonus := 0; -- Hangus jika ada pelanggaran
+        ELSIF v_total_pengurang_hari > 0 THEN
+            v_hasil_bonus := v_master_bonus / 2; -- Potong setengah jika ada LP/TM
+        ELSE
+            v_hasil_bonus := v_master_bonus; -- Full
+        END IF;
+    ELSE
+        -- Periode 1 tidak dapat tunjangan
+        v_hasil_makan := 0;
+        v_hasil_hadir := 0;
+        v_hasil_bonus := 0;
+    END IF;
+
+    -- 7. Ambil Penyesuaian & Kasbon
+    SELECT penyesuaian_bonus, kasbon INTO v_penyesuaian, v_kasbon
+    FROM public.penyesuaian_gaji_pabrik
+    WHERE kode = p_kode AND bulan = p_bulan AND periode = p_target_periode AND perusahaan = p_perusahaan LIMIT 1;
+    
+    v_penyesuaian := COALESCE(v_penyesuaian, 0);
+    v_kasbon := COALESCE(v_kasbon, 0);
+
+    -- 8. Total Akhir
+    v_total_gaji := v_hasil_gapok + v_hasil_lembur + v_hasil_makan + v_hasil_hadir + v_hasil_bonus + v_penyesuaian - v_kasbon;
+
+    -- 9. Upsert ke Laporan
+    INSERT INTO public.laporan_bulanan_pabrik (
         bulan, periode, perusahaan, kode, nama, grade_p1, grade_p2, divisi,
-        h, set_h, s_b, s_tb, i_b, i_tb, t_b, t_tb, lp, tm, lembur,
-        gapok, gaji_lembur, u_m, u_k, uang_bonus,
-        kasbon, penyesuaian_bonus, hasil_gaji,
-        keterangan, keluar_masuk, libur_perusahaan, updated_at
-    ) VALUES (
+        h, i_b, i_tb, s_b, s_tb, t_b, t_tb, set_h, lp, tm, lembur,
+        gapok, gaji_lembur, u_m, u_k, uang_bonus, kasbon, penyesuaian_bonus, hasil_gaji,
+        keterangan, keluar_masuk, updated_at
+    )
+    VALUES (
         p_bulan, p_target_periode, p_perusahaan, p_kode, v_nama, v_grade_p1, v_grade_p2, v_divisi,
-        v_h, v_set_h, v_s_b, v_s_tb, v_i_b, v_i_tb, v_t_b, v_t_tb, v_lp, v_tm, v_lembur,
-        v_final_gapok, v_final_lembur, v_final_makan, v_final_hadir, v_final_bonus,
-        COALESCE(v_kasbon, 0), COALESCE(v_penyesuaian, 0), v_hasil_gaji,
-        '', v_keluar_masuk, v_lp, NOW()
+        v_h, v_i_b, v_i_tb, v_s_b, v_s_tb, v_t_b, v_t_tb, v_set_h, v_lp, v_tm, v_lembur,
+        v_hasil_gapok, v_hasil_lembur, v_hasil_makan, v_hasil_hadir, v_hasil_bonus, v_kasbon, v_penyesuaian, v_total_gaji,
+        'Auto-calculated V38', v_keluar_masuk, NOW()
     )
     ON CONFLICT (bulan, periode, kode) DO UPDATE SET
-        nama = EXCLUDED.nama, grade_p1 = EXCLUDED.grade_p1, grade_p2 = EXCLUDED.grade_p2, divisi = EXCLUDED.divisi, perusahaan = EXCLUDED.perusahaan,
-        h = EXCLUDED.h, set_h = EXCLUDED.set_h, s_b = EXCLUDED.s_b, s_tb = EXCLUDED.s_tb, i_b = EXCLUDED.i_b, i_tb = EXCLUDED.i_tb, t_b = EXCLUDED.t_b, t_tb = EXCLUDED.t_tb, lp = EXCLUDED.lp, tm = EXCLUDED.tm, lembur = EXCLUDED.lembur,
+        nama = EXCLUDED.nama, grade_p1 = EXCLUDED.grade_p1, grade_p2 = EXCLUDED.grade_p2, divisi = EXCLUDED.divisi,
+        h = EXCLUDED.h, i_b = EXCLUDED.i_b, i_tb = EXCLUDED.i_tb, s_b = EXCLUDED.s_b, s_tb = EXCLUDED.s_tb, t_b = EXCLUDED.t_b, t_tb = EXCLUDED.t_tb, set_h = EXCLUDED.set_h, lp = EXCLUDED.lp, tm = EXCLUDED.tm, lembur = EXCLUDED.lembur,
         gapok = EXCLUDED.gapok, gaji_lembur = EXCLUDED.gaji_lembur, u_m = EXCLUDED.u_m, u_k = EXCLUDED.u_k, uang_bonus = EXCLUDED.uang_bonus,
         kasbon = EXCLUDED.kasbon, penyesuaian_bonus = EXCLUDED.penyesuaian_bonus, hasil_gaji = EXCLUDED.hasil_gaji,
-        keluar_masuk = EXCLUDED.keluar_masuk, libur_perusahaan = EXCLUDED.libur_perusahaan, updated_at = NOW();
+        keterangan = EXCLUDED.keterangan, keluar_masuk = EXCLUDED.keluar_masuk, updated_at = NOW();
 
-    RETURN 'Success';
+    RETURN 'Success V38';
 END;
 $function$;
 
+-- 4. Trigger Otomatis saat Presensi Berubah
+CREATE OR REPLACE FUNCTION trigger_calculate_report_v38()
+RETURNS TRIGGER AS $$
+BEGIN
+    PERFORM public.calculate_monthly_report_v38(NEW.bulan, NEW.kode, NEW.perusahaan, NEW.periode);
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_auto_calc_report ON public.presensi_harian_pabrik;
+CREATE TRIGGER trg_auto_calc_report
+AFTER INSERT OR UPDATE ON public.presensi_harian_pabrik
+FOR EACH ROW EXECUTE FUNCTION trigger_calculate_report_v38();
+
+-- Grant Execution
+GRANT EXECUTE ON FUNCTION public.calculate_monthly_report_v38(TEXT, TEXT, TEXT, TEXT) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.calculate_progressive_penalty(INT) TO authenticated, service_role;
+
 NOTIFY pgrst, 'reload config';
-`;
